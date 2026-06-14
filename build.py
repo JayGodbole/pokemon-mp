@@ -25,6 +25,10 @@ try {
   if (typeof renderWorld !== 'undefined') window.renderWorld = renderWorld;
   if (typeof getCharCanvas !== 'undefined') window.getCharCanvas = getCharCanvas;
   if (typeof openPartnerSelect !== 'undefined') window.openPartnerSelect = openPartnerSelect;
+  if (typeof SPRITE_BASE !== 'undefined') window.SPRITE_BASE = SPRITE_BASE;
+  if (typeof SPRITE_BACK !== 'undefined') window.SPRITE_BACK = SPRITE_BACK;
+  if (typeof SPRITE_ANIM !== 'undefined') window.SPRITE_ANIM = SPRITE_ANIM;
+  if (typeof SPRITE_BACK_ANIM !== 'undefined') window.SPRITE_BACK_ANIM = SPRITE_BACK_ANIM;
   (function syncGlobals(){
     try {
       if (typeof G !== 'undefined') window.G = G;
