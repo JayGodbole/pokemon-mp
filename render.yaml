@@ -1,0 +1,14 @@
+# Render Blueprint for Pokemon Multiplayer Journey
+# IMPORTANT: this is a NODE app, not Go. If Render shows a "go build ..."
+# build command, the runtime was guessed wrong -> use this Blueprint
+# (New + > Blueprint) or set Language/Runtime = Node manually.
+services:
+  - type: web
+    name: pokemon-mp
+    runtime: node
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node mp-server.js
+    healthCheckPath: /
+    autoDeploy: true
