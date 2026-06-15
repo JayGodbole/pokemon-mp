@@ -431,7 +431,8 @@
 
   function drawPeers() {
     const G = window.G;
-    if (!MP.started || !G || !G.player || !window.World || !World.ctx) return;
+    const World = window.World;
+    if (!MP.started || !G || !G.player || !World || !World.ctx) return;
     if (document.getElementById("world-screen").style.display !== "flex") return;
     stepPeers();
 
@@ -580,7 +581,8 @@
   function onCanvasClick(e) {
     if (!MP.started || MP.battle) return;
     const G = window.G;
-    if (!G || !G.player) return;
+    const World = window.World;
+    if (!G || !G.player || !World) return;
     const canvas = document.getElementById("world-canvas");
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -589,20 +591,33 @@
     // map screen click to canvas internal coords
     const cx = (e.clientX - rect.left) * (VIEW_W / rect.width);
     const cy = (e.clientY - rect.top) * (VIEW_H / rect.height);
-    // camera
+    // camera (same as renderWorld)
     const pw = G.player.px, ph = G.player.py;
     const maxX = World.W * TILE - VIEW_W, maxY = World.H * TILE - VIEW_H;
     let camX = Math.max(0, Math.min(maxX, pw - VIEW_W / 2 + 8));
     let camY = Math.max(0, Math.min(maxY, ph - VIEW_H / 2 + 8));
     const myArea = currentArea();
-    let best = null, bestD = 18; // px hit radius
+
+    // Forgiving hit test: pick the closest peer whose sprite box contains/near the click.
+    let best = null, bestD = 1e9;
     for (const [id, p] of MP.peers) {
       if (p.area !== myArea) continue;
-      const sx = p.px - camX + 8, sy = p.py - camY + 8;
-      const d = Math.hypot(sx - cx, sy - cy);
-      if (d < bestD) { bestD = d; best = { id, p }; }
+      const sx = p.px - camX, sy = p.py - camY; // sprite top-left (16x20)
+      const centerX = sx + 8, centerY = sy + 6;
+      // inside the sprite bounding box (with padding) OR within a generous radius
+      const inBox = cx >= sx - 6 && cx <= sx + 22 && cy >= sy - 10 && cy <= sy + 24;
+      const d = Math.hypot(centerX - cx, centerY - cy);
+      if (inBox || d < 22) {
+        if (d < bestD) { bestD = d; best = { id, p }; }
+      }
     }
-    if (best) openPeerMenu(best.id, best.p, e.clientX, e.clientY);
+    if (best) {
+      openPeerMenu(best.id, best.p, e.clientX, e.clientY);
+    } else if (MP.peers.size === 0) {
+      toast("No other trainers here yet.");
+    } else {
+      toast("Click directly on a trainer to interact.");
+    }
   }
 
   function openPeerMenu(id, peer, x, y) {
@@ -834,14 +849,24 @@
       }
     });
 
-    // PvP: click a peer in the overworld
+    // PvP: click a peer in the overworld. Attach to the canvas AND the world
+    // container so a click can't be swallowed by a layered element.
     const wc = document.getElementById("world-canvas");
-    if (wc) wc.addEventListener("click", onCanvasClick);
+    if (wc) wc.addEventListener("click", (e) => { e.stopPropagation(); onCanvasClick(e); });
+    const ws = document.getElementById("world-screen");
+    if (ws) ws.addEventListener("click", (e) => {
+      // only handle if the click was on the canvas region (ignore HUD buttons)
+      if (e.target && (e.target.id === "world-canvas" || e.target.id === "world-screen")) {
+        e.stopPropagation(); onCanvasClick(e);
+      }
+    });
     // dismiss context menu on outside click
     document.addEventListener("click", (e) => {
       const menu = document.getElementById("mp-menu");
       if (menu.style.display === "block" && !menu.contains(e.target) &&
-          e.target.id !== "world-canvas") menu.style.display = "none";
+          e.target.id !== "world-canvas" && e.target.id !== "world-screen") {
+        menu.style.display = "none";
+      }
     });
 
     // battle overlay buttons
