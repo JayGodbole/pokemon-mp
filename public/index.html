@@ -5139,11 +5139,183 @@ try {
     document.getElementById("mp-battle-end-btn").addEventListener("click", closeBattle);
   }
 
+  /* ============================================================
+     MOBILE TOUCH CONTROLS  (on-screen D-pad + buttons)
+     Works by dispatching synthetic keyboard events so the game's
+     existing key handlers do all the work (movement, talk, advance text,
+     and battle menus that already respond to taps).
+     ============================================================ */
+  const KEYCODES = {
+    up: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
+    down: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
+    left: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
+    right: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+    a: { key: "Enter", code: "Enter", keyCode: 13 },
+    space: { key: " ", code: "Space", keyCode: 32 },
+    b: { key: "Escape", code: "Escape", keyCode: 27 },
+  };
+  function fireKey(name, type) {
+    const k = KEYCODES[name];
+    if (!k) return;
+    const ev = new KeyboardEvent(type, {
+      key: k.key, code: k.code, keyCode: k.keyCode, which: k.keyCode,
+      bubbles: true, cancelable: true,
+    });
+    (document.activeElement || document).dispatchEvent(ev);
+    document.dispatchEvent(ev);
+    window.dispatchEvent(ev);
+  }
+
+  function isTouchDevice() {
+    return ("ontouchstart" in window) || (navigator.maxTouchPoints > 0) ||
+      window.matchMedia("(pointer: coarse)").matches;
+  }
+
+  function injectTouchStyles() {
+    const css = `
+    /* responsive: scale the gameboy frame to fit phones */
+    @media (max-width: 700px) {
+      body { align-items:flex-start; padding:4px; overflow-y:auto; }
+      #gameboy { width:100% !important; max-width:480px; padding:8px !important;
+        border-radius:14px 14px 30px 14px; }
+      #screen-border { padding:4px !important; }
+      #game-screen { width:100% !important; height:auto !important; aspect-ratio:3/2; }
+      #world-canvas, #battle-bg, canvas { width:100% !important; height:auto !important; }
+      /* leave room at bottom for the touch pad + chat */
+      body { padding-bottom:230px; }
+    }
+
+    /* on-screen controls */
+    #mp-touch{position:fixed;left:0;right:0;bottom:0;z-index:9600;display:none;
+      pointer-events:none;padding:8px 10px calc(8px + env(safe-area-inset-bottom));
+      justify-content:space-between;align-items:flex-end;
+      font-family:'Press Start 2P',monospace;}
+    #mp-touch.on{display:flex;}
+    #mp-dpad{position:relative;width:150px;height:150px;pointer-events:auto;}
+    .mp-dbtn{position:absolute;width:50px;height:50px;background:#2b2f44;border:2px solid #FFD700;
+      color:#FFD700;font-size:16px;display:flex;align-items:center;justify-content:center;
+      border-radius:10px;user-select:none;-webkit-user-select:none;touch-action:none;
+      box-shadow:0 3px 0 #1a1d2e;}
+    .mp-dbtn:active,.mp-dbtn.pressed{background:#FFD700;color:#111;box-shadow:0 1px 0 #1a1d2e;transform:translateY(2px);}
+    #mp-d-up{top:0;left:50px;} #mp-d-down{bottom:0;left:50px;}
+    #mp-d-left{left:0;top:50px;} #mp-d-right{right:0;top:50px;}
+    #mp-d-center{top:50px;left:50px;width:50px;height:50px;background:#1a1d2e;border:2px solid #555;border-radius:8px;}
+    #mp-actions{display:flex;flex-direction:column;gap:10px;align-items:flex-end;pointer-events:auto;}
+    .mp-abtn{min-width:64px;height:64px;border-radius:50%;background:#8B0000;border:3px solid #FFD700;
+      color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center;
+      user-select:none;-webkit-user-select:none;touch-action:none;box-shadow:0 4px 0 #5a0000;padding:0 6px;}
+    .mp-abtn.b{background:#1565c0;border-color:#90caf9;box-shadow:0 4px 0 #0d3c75;}
+    .mp-abtn:active,.mp-abtn.pressed{transform:translateY(2px);box-shadow:0 1px 0 #5a0000;filter:brightness(1.2);}
+    .mp-row{display:flex;gap:8px;}
+    .mp-minibtn{padding:8px 10px;border-radius:8px;background:#2b2f44;border:2px solid #FFD700;color:#FFD700;
+      font-size:7px;user-select:none;-webkit-user-select:none;touch-action:none;box-shadow:0 3px 0 #1a1d2e;}
+    .mp-minibtn:active{transform:translateY(2px);box-shadow:0 1px 0 #1a1d2e;}
+    #mp-touch-toggle{position:fixed;right:8px;bottom:calc(200px + env(safe-area-inset-bottom));z-index:9601;
+      background:#FFD700;color:#111;border:none;border-radius:8px;padding:8px 10px;font-size:8px;
+      font-family:'Press Start 2P',monospace;display:none;box-shadow:0 3px 0 #b8860b;}
+    /* on touch, lift the chat bar above the control pad so they don't overlap */
+    body.mp-has-touch #mp-chatbar{bottom:200px;max-height:30vh;}
+    body.mp-has-touch #mp-chatbar-log{max-height:16vh;}
+    @media (max-width: 700px){
+      /* keep the PvP battle move buttons reachable above the pad */
+      #mp-battle-ui{padding-bottom:210px;}
+    }
+    `;
+    const s = document.createElement("style");
+    s.textContent = css;
+    document.head.appendChild(s);
+  }
+
+  function injectTouchDOM() {
+    const pad = document.createElement("div");
+    pad.id = "mp-touch";
+    pad.innerHTML = `
+      <div id="mp-dpad">
+        <div class="mp-dbtn" id="mp-d-up" data-dir="up">▲</div>
+        <div class="mp-dbtn" id="mp-d-left" data-dir="left">◀</div>
+        <div id="mp-d-center"></div>
+        <div class="mp-dbtn" id="mp-d-right" data-dir="right">▶</div>
+        <div class="mp-dbtn" id="mp-d-down" data-dir="down">▼</div>
+      </div>
+      <div id="mp-actions">
+        <div class="mp-row">
+          <div class="mp-minibtn" id="mp-t-bag">BAG</div>
+          <div class="mp-minibtn" id="mp-t-party">PARTY</div>
+        </div>
+        <div class="mp-row">
+          <div class="mp-abtn b" id="mp-b-btn">B</div>
+          <div class="mp-abtn" id="mp-a-btn">A</div>
+        </div>
+      </div>`;
+    document.body.appendChild(pad);
+
+    const toggle = document.createElement("button");
+    toggle.id = "mp-touch-toggle";
+    toggle.textContent = "🎮 CONTROLS";
+    document.body.appendChild(toggle);
+  }
+
+  function wireTouch() {
+    // D-pad: hold to move (keydown on press, keyup on release)
+    document.querySelectorAll(".mp-dbtn[data-dir]").forEach((el) => {
+      const dir = el.dataset.dir;
+      const press = (e) => { e.preventDefault(); el.classList.add("pressed"); fireKey(dir, "keydown"); };
+      const release = (e) => { e.preventDefault(); el.classList.remove("pressed"); fireKey(dir, "keyup"); };
+      el.addEventListener("touchstart", press, { passive: false });
+      el.addEventListener("touchend", release, { passive: false });
+      el.addEventListener("touchcancel", release, { passive: false });
+      // mouse fallback (desktop testing)
+      el.addEventListener("mousedown", press);
+      el.addEventListener("mouseup", release);
+      el.addEventListener("mouseleave", (e) => { if (el.classList.contains("pressed")) release(e); });
+    });
+
+    // A button = Enter/Space (talk / advance text / confirm). Tap = down+up.
+    const tapKey = (el, keyName) => {
+      const down = (e) => { e.preventDefault(); el.classList.add("pressed"); fireKey(keyName, "keydown"); };
+      const up = (e) => { e.preventDefault(); el.classList.remove("pressed"); fireKey(keyName, "keyup"); };
+      el.addEventListener("touchstart", down, { passive: false });
+      el.addEventListener("touchend", up, { passive: false });
+      el.addEventListener("mousedown", down);
+      el.addEventListener("mouseup", up);
+    };
+    tapKey(document.getElementById("mp-a-btn"), "space"); // SPACE = interact/advance
+    tapKey(document.getElementById("mp-b-btn"), "b");       // ESC = back/close
+
+    // BAG / PARTY -> click the game's own buttons (they exist in the world UI)
+    const clickGame = (id) => { const b = document.getElementById(id); if (b) b.click(); };
+    document.getElementById("mp-t-bag").addEventListener("click", () => clickGame("world-bag-btn"));
+    document.getElementById("mp-t-party").addEventListener("click", () => clickGame("world-party-btn"));
+
+    // also let A advance the world textbox / battle text directly (belt & suspenders)
+    document.getElementById("mp-a-btn").addEventListener("click", () => {
+      const gs = document.getElementById("game-screen");
+      if (gs) gs.click(); // game advances text on game-screen click
+    });
+
+    // show/hide toggle
+    document.getElementById("mp-touch-toggle").addEventListener("click", () => {
+      document.getElementById("mp-touch").classList.toggle("on");
+    });
+  }
+
+  function maybeShowTouch() {
+    if (isTouchDevice() || window.matchMedia("(max-width: 700px)").matches) {
+      document.getElementById("mp-touch").classList.add("on");
+      document.getElementById("mp-touch-toggle").style.display = "block";
+      document.body.classList.add("mp-has-touch");
+    }
+  }
+
   function init() {
     injectStyles();
+    injectTouchStyles();
     injectDOM();
+    injectTouchDOM();
     injectTitleButton();
     wire();
+    wireTouch();
+    maybeShowTouch();
     requestAnimationFrame(syncLoop);
     // try to hook render early (and keep trying until renderWorld exists)
     const h = setInterval(() => { if (hookRender()) clearInterval(h); }, 200);
