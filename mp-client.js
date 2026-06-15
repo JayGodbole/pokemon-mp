@@ -894,32 +894,38 @@
   function fireKey(name, type) {
     const k = KEYCODES[name];
     if (!k) return;
+    // Dispatch ONCE. The event bubbles, so a single dispatch on document reaches
+    // both document-level and window-level listeners (the game binds keydown on
+    // document and keyup on window). Dispatching multiple times caused the action
+    // to fire twice (e.g. opening then instantly closing a dialogue).
     const ev = new KeyboardEvent(type, {
       key: k.key, code: k.code, keyCode: k.keyCode, which: k.keyCode,
       bubbles: true, cancelable: true,
     });
-    (document.activeElement || document).dispatchEvent(ev);
     document.dispatchEvent(ev);
-    window.dispatchEvent(ev);
   }
 
+  function mq(q) {
+    try { return window.matchMedia ? window.matchMedia(q).matches : false; }
+    catch (e) { return false; }
+  }
+  function isSmallScreen() {
+    return mq("(max-width: 700px)") || (window.innerWidth && window.innerWidth <= 700);
+  }
   function isTouchDevice() {
-    return ("ontouchstart" in window) || (navigator.maxTouchPoints > 0) ||
-      window.matchMedia("(pointer: coarse)").matches;
+    return ("ontouchstart" in window) || (navigator.maxTouchPoints > 0) || mq("(pointer: coarse)");
   }
 
   function injectTouchStyles() {
     const css = `
-    /* responsive: scale the gameboy frame to fit phones */
+    /* responsive: scale the WHOLE gameboy down with transform so every internal
+       pixel position (world AND battle sprites/HP boxes) stays perfectly aligned.
+       We do NOT resize #game-screen itself — that would misplace absolutely-positioned
+       battle sprites and status bars. */
     @media (max-width: 700px) {
-      body { align-items:flex-start; padding:4px; overflow-y:auto; }
-      #gameboy { width:100% !important; max-width:480px; padding:8px !important;
-        border-radius:14px 14px 30px 14px; }
-      #screen-border { padding:4px !important; }
-      #game-screen { width:100% !important; height:auto !important; aspect-ratio:3/2; }
-      #world-canvas, #battle-bg, canvas { width:100% !important; height:auto !important; }
-      /* leave room at bottom for the touch pad + chat */
-      body { padding-bottom:230px; }
+      body { align-items:flex-start; justify-content:flex-start; padding:0; overflow-y:auto;
+        padding-bottom:210px; }
+      #mp-scale-wrap { transform-origin:top center; }
     }
 
     /* on-screen controls */
@@ -1007,28 +1013,31 @@
       el.addEventListener("mouseleave", (e) => { if (el.classList.contains("pressed")) release(e); });
     });
 
-    // A button = Enter/Space (talk / advance text / confirm). Tap = down+up.
-    const tapKey = (el, keyName) => {
-      const down = (e) => { e.preventDefault(); el.classList.add("pressed"); fireKey(keyName, "keydown"); };
-      const up = (e) => { e.preventDefault(); el.classList.remove("pressed"); fireKey(keyName, "keyup"); };
-      el.addEventListener("touchstart", down, { passive: false });
-      el.addEventListener("touchend", up, { passive: false });
-      el.addEventListener("mousedown", down);
-      el.addEventListener("mouseup", up);
+    // A button = interact / talk / advance text / confirm.
+    // Fire a SINGLE synthetic Space keydown per tap (the game advances on keydown).
+    // We intentionally do NOT also click game-screen, which would double-advance and
+    // instantly close a dialogue right after opening it.
+    const tapButton = (el, keyName) => {
+      let handled = false;
+      const trigger = (e) => {
+        e.preventDefault();
+        el.classList.add("pressed");
+        fireKey(keyName, "keydown");
+        fireKey(keyName, "keyup");
+        setTimeout(() => el.classList.remove("pressed"), 120);
+      };
+      // Use touchend for touch (avoids the browser also firing a ghost click),
+      // and click for mouse/desktop. Guard so only one path runs per interaction.
+      el.addEventListener("touchend", (e) => { handled = true; trigger(e); setTimeout(() => (handled = false), 400); }, { passive: false });
+      el.addEventListener("click", (e) => { if (handled) return; trigger(e); });
     };
-    tapKey(document.getElementById("mp-a-btn"), "space"); // SPACE = interact/advance
-    tapKey(document.getElementById("mp-b-btn"), "b");       // ESC = back/close
+    tapButton(document.getElementById("mp-a-btn"), "space"); // SPACE = interact/advance
+    tapButton(document.getElementById("mp-b-btn"), "b");       // ESC = back/close
 
     // BAG / PARTY -> click the game's own buttons (they exist in the world UI)
     const clickGame = (id) => { const b = document.getElementById(id); if (b) b.click(); };
     document.getElementById("mp-t-bag").addEventListener("click", () => clickGame("world-bag-btn"));
     document.getElementById("mp-t-party").addEventListener("click", () => clickGame("world-party-btn"));
-
-    // also let A advance the world textbox / battle text directly (belt & suspenders)
-    document.getElementById("mp-a-btn").addEventListener("click", () => {
-      const gs = document.getElementById("game-screen");
-      if (gs) gs.click(); // game advances text on game-screen click
-    });
 
     // show/hide toggle
     document.getElementById("mp-touch-toggle").addEventListener("click", () => {
@@ -1037,11 +1046,48 @@
   }
 
   function maybeShowTouch() {
-    if (isTouchDevice() || window.matchMedia("(max-width: 700px)").matches) {
+    if (isTouchDevice() || isSmallScreen()) {
       document.getElementById("mp-touch").classList.add("on");
       document.getElementById("mp-touch-toggle").style.display = "block";
       document.body.classList.add("mp-has-touch");
+      setupResponsiveScale();
     }
+  }
+
+  // Scale the entire gameboy frame to fit narrow screens, preserving all internal
+  // pixel layout (world + battle). Wrap #gameboy once, then scale the wrapper.
+  function setupResponsiveScale() {
+    const gb = document.getElementById("gameboy");
+    if (!gb) return;
+    let wrap = document.getElementById("mp-scale-wrap");
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.id = "mp-scale-wrap";
+      gb.parentNode.insertBefore(wrap, gb);
+      wrap.appendChild(gb);
+    }
+    const apply = () => {
+      // only scale on small screens; otherwise reset
+      if (!isSmallScreen()) {
+        wrap.style.transform = "";
+        wrap.style.height = "";
+        return;
+      }
+      const frameW = gb.offsetWidth || 640;
+      const frameH = gb.offsetHeight || 520;
+      const margin = 8;
+      const scale = Math.min(1, (window.innerWidth - margin) / frameW);
+      wrap.style.transform = `scale(${scale})`;
+      wrap.style.transformOrigin = "top center";
+      // reserve the post-scale height so the page doesn't leave a huge gap / clip
+      wrap.style.height = (frameH * scale) + "px";
+      wrap.style.width = "100%";
+    };
+    apply();
+    window.addEventListener("resize", apply);
+    window.addEventListener("orientationchange", () => setTimeout(apply, 200));
+    // re-apply when switching between world/battle (sizes can change)
+    setInterval(apply, 1500);
   }
 
   function init() {
