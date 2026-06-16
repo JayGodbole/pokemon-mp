@@ -4387,6 +4387,8 @@ try {
     battle: null,        // active PvP battle state for ME
     pendingInvite: null, // incoming invite {from, fromName}
     pendingTrade: null,  // outgoing trade I offered {kind,to,idx,payload}
+    incomingTrade: null, // offer I received, awaiting my accept/decline
+    talkTo: null,        // {id, p} of the player I'm currently talking to
   };
   window.MP = MP; // for debugging
 
@@ -4476,6 +4478,30 @@ try {
     #mp-menu button.warn{background:#FFD700;color:#111;}
     #mp-menu button.gray{background:#777;color:#fff;}
     #mp-menu{min-width:200px;max-width:260px;}
+
+    /* ===== Dedicated trade/interaction modal ===== */
+    #mp-trade{position:fixed;inset:0;z-index:10050;background:rgba(0,0,0,.72);display:none;
+      align-items:center;justify-content:center;font-family:'Press Start 2P',monospace;padding:16px;}
+    #mp-trade.show{display:flex;}
+    #mp-trade-box{background:#16213e;border:3px solid #FFD700;border-radius:12px;width:330px;max-width:94vw;
+      max-height:88vh;overflow:auto;padding:16px;box-shadow:0 12px 40px rgba(0,0,0,.6);}
+    #mp-trade-title{color:#FFD700;font-size:11px;text-align:center;margin-bottom:12px;line-height:1.5;}
+    #mp-trade-body{display:flex;flex-direction:column;gap:8px;}
+    .mp-tbtn{width:100%;padding:12px;border:none;border-radius:8px;cursor:pointer;color:#062a3a;
+      background:#4fc3f7;font-family:'Press Start 2P',monospace;font-size:9px;text-align:center;}
+    .mp-tbtn.warn{background:#FFD700;color:#111;}
+    .mp-tbtn.gray{background:#8893b0;color:#10182e;}
+    .mp-tbtn.green{background:#4CAF50;color:#fff;}
+    .mp-tbtn.red{background:#e0556a;color:#fff;}
+    .mp-tbtn:active{transform:translateY(2px);filter:brightness(1.1);}
+    .mp-tinfo{font-size:8px;color:#cfe;text-align:center;line-height:1.6;}
+    .mp-tinput{width:100%;padding:11px;border-radius:8px;border:2px solid #0f3460;background:#0f1830;color:#fff;
+      font-family:'Press Start 2P',monospace;font-size:12px;text-align:center;outline:none;}
+    .mp-tlist{display:flex;flex-direction:column;gap:6px;max-height:46vh;overflow-y:auto;}
+    .mp-titem{display:flex;justify-content:space-between;align-items:center;padding:11px;border:none;border-radius:8px;
+      cursor:pointer;background:#2b3350;color:#fff;font-family:'Press Start 2P',monospace;font-size:8px;text-align:left;}
+    .mp-titem:active{background:#3a4470;}
+    .mp-titem .q{color:#FFD700;margin-left:10px;}
     .mp-trade-row{font-size:7px;color:#cfe;text-align:center;margin:6px 0;}
     .mp-trade-input{width:100%;padding:8px;margin:6px 0;border-radius:6px;border:2px solid #0f3460;
       background:#0f1830;color:#fff;font-family:'Press Start 2P',monospace;font-size:9px;outline:none;text-align:center;}
@@ -4571,6 +4597,15 @@ try {
     const menu = document.createElement("div");
     menu.id = "mp-menu";
     document.body.appendChild(menu);
+
+    // Dedicated full-screen trade/interaction modal (robust, self-contained).
+    const trade = document.createElement("div");
+    trade.id = "mp-trade";
+    trade.innerHTML = `<div id="mp-trade-box">
+        <div id="mp-trade-title">Trainer</div>
+        <div id="mp-trade-body"></div>
+      </div>`;
+    document.body.appendChild(trade);
 
     // PvP battle overlay
     const battle = document.createElement("div");
@@ -4965,196 +5000,185 @@ try {
   // Detect a click on the world canvas, find the nearest peer, open menu.
   // Find a peer standing on a tile adjacent to me (up/down/left/right), same area.
   // Prefers the peer in the direction I'm facing, else any adjacent peer.
+  /* ============================================================
+     PLAYER INTERACTION + TRADING  (clean, modal-based)
+     Stand next to another player and press A/Space to open this.
+       1) Request Battle
+       2) Exchange Money  (you = giver; recipient must accept)
+       3) Give Items / Pokemon (separate lists; recipient must accept)
+     ============================================================ */
+
   function adjacentPeer() {
     const G = window.G;
     if (!G || !G.player) return null;
     const myArea = currentArea();
     const px = G.player.tileX, py = G.player.tileY;
-    const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[G.player.dir] || [0, 1];
-    const facing = { x: px + dirVec[0], y: py + dirVec[1] };
-    const around = [
-      facing,
-      { x: px, y: py - 1 }, { x: px, y: py + 1 },
-      { x: px - 1, y: py }, { x: px + 1, y: py },
+    const dv = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] }[G.player.dir] || [0,1];
+    const cells = [
+      { x:px+dv[0], y:py+dv[1] },
+      { x:px, y:py-1 }, { x:px, y:py+1 }, { x:px-1, y:py }, { x:px+1, y:py },
     ];
-    for (const cell of around) {
+    for (const c of cells) {
       for (const [id, p] of MP.peers) {
         if (p.area !== myArea) continue;
-        if (p.tileX === cell.x && p.tileY === cell.y) return { id, p };
+        if (p.tileX === c.x && p.tileY === c.y) return { id, p };
       }
     }
     return null;
   }
 
-  // Called when the player presses A/Space. Returns true if it opened a peer
-  // interaction (so the game's own interact() should be suppressed).
   function tryPeerInteract() {
     if (!MP.started || MP.battle) return false;
-    if (document.getElementById("mp-menu").style.display === "block") return false;
+    if (tradeModalOpen()) return false;
     const hit = adjacentPeer();
     if (!hit) return false;
-    openPeerMenu(hit.id, hit.p);
+    MP.talkTo = hit;
+    openTalkMenu(hit.id, hit.p);
     return true;
   }
 
-  // Center a menu on screen.
-  function placeMenuCenter(menu) {
-    menu.style.left = (window.innerWidth / 2 - 95) + "px";
-    menu.style.top = (window.innerHeight / 2 - 110) + "px";
-    menu.style.display = "block";
+  function tradeModalOpen() { return document.getElementById("mp-trade").classList.contains("show"); }
+  function openModal(title, bodyHtml) {
+    document.getElementById("mp-trade-title").innerHTML = title;
+    document.getElementById("mp-trade-body").innerHTML = bodyHtml;
+    document.getElementById("mp-trade").classList.add("show");
   }
+  function closeModal() { document.getElementById("mp-trade").classList.remove("show"); }
 
-  // Main interaction menu shown when you talk to an adjacent player.
-  function openPeerMenu(id, peer) {
-    const menu = document.getElementById("mp-menu");
-    if (MP.battling.includes(id)) {
-      menu.innerHTML = `<div class="mp-menu-name">${esc(peer.name)}</div>
-        <button class="warn" data-act="notice">BATTLE IN PROGRESS</button>
-        <button class="gray" data-act="close">CLOSE</button>`;
-      placeMenuCenter(menu);
-      menu.querySelectorAll("button").forEach((b) => b.onclick = () => {
-        menu.style.display = "none";
-        if (b.dataset.act === "notice") toast(peer.name + " is in a battle. Please wait.");
-      });
-      return;
-    }
-    menu.innerHTML = `<div class="mp-menu-name">Talk to ${esc(peer.name)}</div>
-      <button class="warn" data-act="battle">⚔ REQUEST BATTLE</button>
-      <button data-act="money">💰 EXCHANGE MONEY</button>
-      <button data-act="give">🎁 GIVE ITEMS / POKEMON</button>
-      <button class="gray" data-act="close">CANCEL</button>`;
-    placeMenuCenter(menu);
-    menu.querySelectorAll("button").forEach((b) => {
-      b.onclick = () => {
-        const act = b.dataset.act;
-        menu.style.display = "none";
-        if (act === "battle") sendMsg("battle_invite", { target: id, mon: myBattleMon() });
-        else if (act === "money") openMoneyMenu(id, peer);
-        else if (act === "give") openGiveMenu(id, peer);
-      };
-    });
-  }
-
-  /* ============================================================
-     TRADING: money, items, pokemon  (approacher = giver)
-     ============================================================ */
   const moneyOf = () => (window.G && typeof window.G.money === "number") ? window.G.money : 0;
-
-  function openMoneyMenu(id, peer) {
-    const menu = document.getElementById("mp-menu");
-    menu.innerHTML = `<div class="mp-menu-name">Give money to ${esc(peer.name)}</div>
-      <div class="mp-trade-row">You have: $${moneyOf()}</div>
-      <input id="mp-money-amt" class="mp-trade-input" type="number" min="1" placeholder="Amount to give">
-      <button class="warn" data-act="send">SEND OFFER</button>
-      <button class="gray" data-act="back">BACK</button>`;
-    placeMenuCenter(menu);
-    menu.querySelector('[data-act="back"]').onclick = () => { menu.style.display = "none"; };
-    menu.querySelector('[data-act="send"]').onclick = () => {
-      const amt = Math.floor(Number(document.getElementById("mp-money-amt").value) || 0);
-      if (amt <= 0) return toast("Enter a valid amount.");
-      if (amt > moneyOf()) return toast("You don't have that much money.");
-      menu.style.display = "none";
-      MP.pendingTrade = { kind: "money", to: id, payload: { amount: amt } };
-      sendMsg("trade_offer", { target: id, kind: "money", payload: { amount: amt } });
-      toast(`Offered $${amt} to ${peer.name}. Waiting for them to accept…`);
-    };
-  }
-
-  function openGiveMenu(id, peer) {
-    const menu = document.getElementById("mp-menu");
-    menu.innerHTML = `<div class="mp-menu-name">Give to ${esc(peer.name)}</div>
-      <button data-act="items">🎒 GIVE AN ITEM</button>
-      <button data-act="pokemon">🔴 GIVE A POKEMON</button>
-      <button class="gray" data-act="back">BACK</button>`;
-    placeMenuCenter(menu);
-    menu.querySelector('[data-act="back"]').onclick = () => { menu.style.display = "none"; };
-    menu.querySelector('[data-act="items"]').onclick = () => openItemList(id, peer);
-    menu.querySelector('[data-act="pokemon"]').onclick = () => openPokemonList(id, peer);
-  }
-
   function itemDefs() { return window.ITEM_DEFS || []; }
 
-  function openItemList(id, peer) {
-    const menu = document.getElementById("mp-menu");
-    const bag = (window.G && window.G.bag) || {};
-    const owned = itemDefs().filter((d) => (bag[d.key] || 0) > 0);
-    let rows = owned.length
-      ? owned.map((d) => `<button class="mp-list-btn" data-key="${d.key}">${esc(d.name)} <span class="mp-qty">x${bag[d.key]}</span></button>`).join("")
-      : `<div class="mp-trade-row">No items to give.</div>`;
-    menu.innerHTML = `<div class="mp-menu-name">Give an item to ${esc(peer.name)}</div>
-      <div class="mp-list">${rows}</div>
-      <button class="gray" data-act="back">BACK</button>`;
-    placeMenuCenter(menu);
-    menu.querySelector('[data-act="back"]').onclick = () => openGiveMenu(id, peer);
-    menu.querySelectorAll(".mp-list-btn").forEach((b) => {
-      b.onclick = () => {
-        const key = b.dataset.key;
-        const def = itemDefs().find((d) => d.key === key);
-        menu.style.display = "none";
-        MP.pendingTrade = { kind: "item", to: id, payload: { key, name: def ? def.name : key } };
-        sendMsg("trade_offer", { target: id, kind: "item", payload: { key, name: def ? def.name : key } });
-        toast(`Offered ${def ? def.name : key} to ${peer.name}. Waiting…`);
-      };
-    });
+  function openTalkMenu(id, peer) {
+    if (MP.battling.includes(id)) {
+      openModal(esc(peer.name) + " is in a battle", '<button class="mp-tbtn gray" data-act="close">CLOSE</button>');
+      return;
+    }
+    openModal("Talk to " + esc(peer.name),
+      '<button class="mp-tbtn warn" data-act="battle">\u2694 REQUEST BATTLE</button>' +
+      '<button class="mp-tbtn" data-act="money">\ud83d\udcb0 EXCHANGE MONEY</button>' +
+      '<button class="mp-tbtn" data-act="items">\ud83c\udf92 GIVE AN ITEM</button>' +
+      '<button class="mp-tbtn" data-act="pokemon">\ud83d\udd34 GIVE A POKEMON</button>' +
+      '<button class="mp-tbtn gray" data-act="close">CANCEL</button>');
   }
 
-  function openPokemonList(id, peer) {
-    const menu = document.getElementById("mp-menu");
+  function screenMoney(peer) {
+    openModal("Give money to " + esc(peer.name),
+      '<div class="mp-tinfo">You have $' + moneyOf() + '</div>' +
+      '<input id="mp-money-amt" class="mp-tinput" type="number" min="1" inputmode="numeric" placeholder="0">' +
+      '<button class="mp-tbtn green" data-act="money-send">SEND OFFER</button>' +
+      '<button class="mp-tbtn gray" data-act="back">BACK</button>');
+    setTimeout(function(){ var i=document.getElementById("mp-money-amt"); if(i) i.focus(); }, 30);
+  }
+
+  function screenItems(peer) {
+    const bag = (window.G && window.G.bag) || {};
+    const owned = itemDefs().filter(function(d){ return (bag[d.key]||0) > 0; });
+    const rows = owned.length
+      ? owned.map(function(d){ return '<button class="mp-titem" data-act="item-pick" data-key="'+d.key+'"><span>'+esc(d.name)+'</span><span class="q">x'+bag[d.key]+'</span></button>'; }).join("")
+      : '<div class="mp-tinfo">You have no items to give.</div>';
+    openModal("Give an item to " + esc(peer.name), '<div class="mp-tlist">'+rows+'</div><button class="mp-tbtn gray" data-act="back">BACK</button>');
+  }
+
+  function screenPokemon(peer) {
     const party = (window.G && window.G.party) || [];
-    // You can't give away your last Pokemon.
-    const giveable = party.length > 1 ? party : [];
-    let rows = giveable.length
-      ? party.map((mon, i) => `<button class="mp-list-btn" data-idx="${i}">${esc(mon.name)} <span class="mp-qty">Lv${mon.level || 50}</span></button>`).join("")
-      : `<div class="mp-trade-row">You can't give your only Pokemon.</div>`;
-    menu.innerHTML = `<div class="mp-menu-name">Give a Pokemon to ${esc(peer.name)}</div>
-      <div class="mp-list">${rows}</div>
-      <button class="gray" data-act="back">BACK</button>`;
-    placeMenuCenter(menu);
-    menu.querySelector('[data-act="back"]').onclick = () => openGiveMenu(id, peer);
-    menu.querySelectorAll(".mp-list-btn").forEach((b) => {
-      b.onclick = () => {
-        const idx = Number(b.dataset.idx);
+    const rows = party.length > 1
+      ? party.map(function(m,idx){ return '<button class="mp-titem" data-act="poke-pick" data-idx="'+idx+'"><span>'+esc(m.name)+'</span><span class="q">Lv'+(m.level||50)+'</span></button>'; }).join("")
+      : '<div class="mp-tinfo">You cannot give your only Pokemon.</div>';
+    openModal("Give a Pokemon to " + esc(peer.name), '<div class="mp-tlist">'+rows+'</div><button class="mp-tbtn gray" data-act="back">BACK</button>');
+  }
+
+  function showTradeOffer(msg) {
+    MP.incomingTrade = msg;
+    var desc = "";
+    if (msg.kind === "money") desc = "wants to give you<br>$" + msg.payload.amount;
+    else if (msg.kind === "item") desc = "wants to give you<br>" + esc(msg.payload.name || msg.payload.key);
+    else if (msg.kind === "pokemon") desc = "wants to give you<br>" + esc(msg.payload.mon.name) + " (Lv" + (msg.payload.mon.level||50) + ")";
+    openModal(esc(msg.fromName) + " " + desc,
+      '<button class="mp-tbtn green" data-act="offer-accept">ACCEPT</button>' +
+      '<button class="mp-tbtn red" data-act="offer-decline">DECLINE</button>');
+  }
+
+  function showInvitePrompt(fromName, fromId) {
+    MP.pendingInvite = { from: fromId, fromName: fromName };
+    openModal(esc(fromName) + " challenges you<br>to a battle!",
+      '<button class="mp-tbtn warn" data-act="inv-accept">\u2694 ACCEPT</button>' +
+      '<button class="mp-tbtn gray" data-act="inv-decline">DECLINE</button>');
+  }
+
+  function wireTradeModal() {
+    const modal = document.getElementById("mp-trade");
+    modal.addEventListener("click", function(e){
+      if (e.target === modal) { closeModal(); return; }
+      const btn = e.target.closest("[data-act]");
+      if (!btn) return;
+      e.preventDefault(); e.stopPropagation();
+      const act = btn.dataset.act;
+      const t = MP.talkTo;
+      const peer = t ? t.p : null;
+      const id = t ? t.id : null;
+
+      if (act === "close") { closeModal(); return; }
+      if (act === "back") { openTalkMenu(id, peer); return; }
+      if (act === "battle") { closeModal(); sendMsg("battle_invite", { target:id, mon:myBattleMon() }); toast("Battle request sent to " + (peer?peer.name:"player") + "\u2026"); return; }
+      if (act === "money") { screenMoney(peer); return; }
+      if (act === "items") { screenItems(peer); return; }
+      if (act === "pokemon") { screenPokemon(peer); return; }
+
+      if (act === "money-send") {
+        const el = document.getElementById("mp-money-amt");
+        const amt = Math.floor(Number(el ? el.value : 0) || 0);
+        if (amt <= 0) return toast("Enter a valid amount.");
+        if (amt > moneyOf()) return toast("You don't have that much money.");
+        MP.pendingTrade = { kind:"money", to:id, payload:{ amount:amt } };
+        sendMsg("trade_offer", { target:id, kind:"money", payload:{ amount:amt } });
+        closeModal(); toast("Offered $" + amt + " to " + peer.name + ". Waiting\u2026"); return;
+      }
+      if (act === "item-pick") {
+        const key = btn.dataset.key;
+        const def = itemDefs().find(function(d){ return d.key === key; });
+        MP.pendingTrade = { kind:"item", to:id, payload:{ key:key, name: def?def.name:key } };
+        sendMsg("trade_offer", { target:id, kind:"item", payload:{ key:key, name: def?def.name:key } });
+        closeModal(); toast("Offered " + (def?def.name:key) + " to " + peer.name + ". Waiting\u2026"); return;
+      }
+      if (act === "poke-pick") {
+        const idx = Number(btn.dataset.idx);
+        const party = (window.G && window.G.party) || [];
         const mon = party[idx];
         if (!mon) return;
-        menu.style.display = "none";
-        // serialize the full mon so the receiver can add it to their party
         const monData = JSON.parse(JSON.stringify(mon));
-        MP.pendingTrade = { kind: "pokemon", to: id, idx, payload: { mon: monData } };
-        sendMsg("trade_offer", { target: id, kind: "pokemon", payload: { mon: monData } });
-        toast(`Offered ${mon.name} to ${peer.name}. Waiting…`);
-      };
+        MP.pendingTrade = { kind:"pokemon", to:id, idx:idx, payload:{ mon:monData } };
+        sendMsg("trade_offer", { target:id, kind:"pokemon", payload:{ mon:monData } });
+        closeModal(); toast("Offered " + mon.name + " to " + peer.name + ". Waiting\u2026"); return;
+      }
+
+      if (act === "offer-accept") {
+        const msg = MP.incomingTrade; MP.incomingTrade = null;
+        if (!msg) { closeModal(); return; }
+        applyReceived(msg.kind, msg.payload);
+        sendMsg("trade_confirm", { target: msg.from, kind: msg.kind, payload: msg.payload });
+        const what = msg.kind === "money" ? ("$" + msg.payload.amount) : msg.kind === "item" ? (msg.payload.name || msg.payload.key) : msg.payload.mon.name;
+        toast("Received " + what + " from " + msg.fromName + "!");
+        addChat(null, "You received " + what + " from " + msg.fromName + ".");
+        closeModal(); return;
+      }
+      if (act === "offer-decline") {
+        const msg = MP.incomingTrade; MP.incomingTrade = null;
+        if (msg) sendMsg("trade_cancel", { target: msg.from });
+        closeModal(); return;
+      }
+      if (act === "inv-accept") {
+        const inv = MP.pendingInvite; MP.pendingInvite = null;
+        if (inv) sendMsg("battle_accept", { from: inv.from, mon: myBattleMon() });
+        closeModal(); return;
+      }
+      if (act === "inv-decline") {
+        const inv = MP.pendingInvite; MP.pendingInvite = null;
+        if (inv) sendMsg("battle_decline", { from: inv.from });
+        closeModal(); return;
+      }
     });
   }
 
-  // ---- Incoming offer (I am the RECIPIENT) ----
-  function showTradeOffer(msg) {
-    const menu = document.getElementById("mp-menu");
-    let desc = "";
-    if (msg.kind === "money") desc = `wants to give you <b>$${msg.payload.amount}</b>`;
-    else if (msg.kind === "item") desc = `wants to give you <b>${esc(msg.payload.name || msg.payload.key)}</b>`;
-    else if (msg.kind === "pokemon") desc = `wants to give you <b>${esc(msg.payload.mon.name)}</b> (Lv${msg.payload.mon.level || 50})`;
-    menu.innerHTML = `<div class="mp-menu-name">${esc(msg.fromName)} ${desc}</div>
-      <button class="warn" data-act="accept">ACCEPT</button>
-      <button class="gray" data-act="decline">DECLINE</button>`;
-    placeMenuCenter(menu);
-    menu.querySelector('[data-act="accept"]').onclick = () => {
-      menu.style.display = "none";
-      applyReceived(msg.kind, msg.payload);
-      // tell the giver to finalize (deduct on their side)
-      sendMsg("trade_confirm", { target: msg.from, kind: msg.kind, payload: msg.payload });
-      let what = msg.kind === "money" ? `$${msg.payload.amount}`
-        : msg.kind === "item" ? (msg.payload.name || msg.payload.key)
-        : msg.payload.mon.name;
-      toast(`Received ${what} from ${msg.fromName}!`);
-      addChat(null, `You received ${what} from ${msg.fromName}.`);
-    };
-    menu.querySelector('[data-act="decline"]').onclick = () => {
-      menu.style.display = "none";
-      sendMsg("trade_cancel", { target: msg.from });
-    };
-  }
-
-  // Recipient applies the received gift to their own game state.
   function applyReceived(kind, payload) {
     const G = window.G;
     if (!G) return;
@@ -5166,71 +5190,34 @@ try {
     } else if (kind === "pokemon") {
       G.party = G.party || [];
       const mon = payload.mon;
-      // ensure required battle fields exist
       mon.currentHp = mon.currentHp != null ? mon.currentHp : (mon.maxHp || mon.hp);
-      mon.statMods = mon.statMods || { attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0 };
+      mon.statMods = mon.statMods || { attack:0, defense:0, spAtk:0, spDef:0, speed:0 };
       if (G.party.length < 6) G.party.push(mon);
-      else toast("Party full — Pokemon could not be added.");
+      else toast("Party full \u2014 Pokemon could not be added.");
     }
   }
 
-  // ---- Giver finalizes after recipient accepted (I am the GIVER) ----
   function finalizeGivenTrade(msg) {
     const G = window.G;
-    const t = MP.pendingTrade;
-    MP.pendingTrade = null;
+    const t = MP.pendingTrade; MP.pendingTrade = null;
     if (!G) return;
     if (msg.kind === "money") {
       G.money = Math.max(0, (G.money || 0) - Math.floor(msg.payload.amount || 0));
-      addChat(null, `You gave $${msg.payload.amount} to ${msg.fromName}.`);
-      toast(`Gave $${msg.payload.amount} to ${msg.fromName}.`);
+      addChat(null, "You gave $" + msg.payload.amount + " to " + msg.fromName + ".");
+      toast("Gave $" + msg.payload.amount + " to " + msg.fromName + ".");
     } else if (msg.kind === "item") {
-      if (G.bag && G.bag[msg.payload.key]) {
-        G.bag[msg.payload.key] = Math.max(0, G.bag[msg.payload.key] - 1);
-      }
-      addChat(null, `You gave ${msg.payload.name || msg.payload.key} to ${msg.fromName}.`);
-      toast(`Gave ${msg.payload.name || msg.payload.key} to ${msg.fromName}.`);
+      if (G.bag && G.bag[msg.payload.key]) G.bag[msg.payload.key] = Math.max(0, G.bag[msg.payload.key] - 1);
+      addChat(null, "You gave " + (msg.payload.name || msg.payload.key) + " to " + msg.fromName + ".");
+      toast("Gave " + (msg.payload.name || msg.payload.key) + " to " + msg.fromName + ".");
     } else if (msg.kind === "pokemon") {
-      // remove the given mon from our party (by idx captured at offer time)
       if (t && typeof t.idx === "number" && G.party && G.party.length > 1) {
         G.party.splice(t.idx, 1);
         if (G.partnerIdx >= G.party.length) G.partnerIdx = 0;
         G.partner = G.party[G.partnerIdx];
       }
-      addChat(null, `You gave ${msg.payload.mon.name} to ${msg.fromName}.`);
-      toast(`Gave ${msg.payload.mon.name} to ${msg.fromName}.`);
+      addChat(null, "You gave " + msg.payload.mon.name + " to " + msg.fromName + ".");
+      toast("Gave " + msg.payload.mon.name + " to " + msg.fromName + ".");
     }
-  }
-
-  function startSpectate(id, peer) {
-    // Lightweight spectate: a non-interactive notice that tracks the battler.
-    // (Full live battle mirroring would need server spectate channels; this keeps
-    //  non-battlers from interfering while acknowledging your spectate option.)
-    const note = document.getElementById("mp-spectate-note");
-    note.textContent = "👀 Spectating " + peer.name + "'s battle…";
-    note.style.display = "block";
-    clearTimeout(note._tm);
-    note._tm = setInterval(() => {
-      if (!MP.battling.includes(id)) { note.style.display = "none"; clearInterval(note._tm); }
-    }, 1000);
-  }
-
-  function showInvitePrompt(fromName, fromId) {
-    const menu = document.getElementById("mp-menu");
-    menu.innerHTML = `<div class="mp-menu-name">${esc(fromName)} challenges you!</div>
-      <button class="warn" data-act="accept">⚔ ACCEPT</button>
-      <button class="gray" data-act="decline">DECLINE</button>`;
-    menu.style.left = (window.innerWidth / 2 - 90) + "px";
-    menu.style.top = (window.innerHeight / 2 - 60) + "px";
-    menu.style.display = "block";
-    menu.querySelectorAll("button").forEach((b) => {
-      b.onclick = () => {
-        menu.style.display = "none";
-        if (b.dataset.act === "accept") sendMsg("battle_accept", { from: fromId, mon: myBattleMon() });
-        else sendMsg("battle_decline", { from: fromId });
-        MP.pendingInvite = null;
-      };
-    });
   }
 
   /* ============================================================
@@ -5418,13 +5405,7 @@ try {
       }
     }, true); // capture = true so we run before the game's document keydown
 
-    // dismiss the interaction menu on outside click
-    document.addEventListener("click", (e) => {
-      const menu = document.getElementById("mp-menu");
-      if (menu.style.display === "block" && !menu.contains(e.target)) {
-        menu.style.display = "none";
-      }
-    });
+    // (the trade modal manages its own backdrop dismissal in wireTradeModal)
 
     // battle overlay buttons
     document.getElementById("mp-battle-flee").addEventListener("click", () => {
@@ -5672,6 +5653,7 @@ try {
     injectTitleButton();
     wire();
     wireTouch();
+    wireTradeModal();
     maybeShowTouch();
     requestAnimationFrame(syncLoop);
     // try to hook render early (and keep trying until renderWorld exists)
