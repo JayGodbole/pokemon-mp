@@ -22,6 +22,7 @@
     battling: [],        // ids of players currently in a battle
     battle: null,        // active PvP battle state for ME
     pendingInvite: null, // incoming invite {from, fromName}
+    pendingTrade: null,  // outgoing trade I offered {kind,to,idx,payload}
   };
   window.MP = MP; // for debugging
 
@@ -110,6 +111,16 @@
       font-family:'Press Start 2P',monospace;cursor:pointer;background:#4fc3f7;color:#062a3a;}
     #mp-menu button.warn{background:#FFD700;color:#111;}
     #mp-menu button.gray{background:#777;color:#fff;}
+    #mp-menu{min-width:200px;max-width:260px;}
+    .mp-trade-row{font-size:7px;color:#cfe;text-align:center;margin:6px 0;}
+    .mp-trade-input{width:100%;padding:8px;margin:6px 0;border-radius:6px;border:2px solid #0f3460;
+      background:#0f1830;color:#fff;font-family:'Press Start 2P',monospace;font-size:9px;outline:none;text-align:center;}
+    .mp-list{max-height:160px;overflow-y:auto;margin:4px 0;}
+    .mp-list-btn{width:100%;margin:3px 0;padding:8px;border:none;border-radius:5px;cursor:pointer;
+      background:#2b3350;color:#fff;font-family:'Press Start 2P',monospace;font-size:7px;text-align:left;
+      display:flex;justify-content:space-between;align-items:center;}
+    .mp-list-btn:active{background:#3a4470;}
+    .mp-list-btn .mp-qty{color:#FFD700;margin-left:8px;}
 
     /* ===== PvP battle overlay ===== */
     #mp-battle{position:fixed;inset:0;z-index:9800;background:#1a1a2e;display:none;
@@ -350,6 +361,16 @@
       case "battle_end":
         finishBattle(msg);
         break;
+      case "trade_offer":
+        showTradeOffer(msg);
+        break;
+      case "trade_confirm":
+        finalizeGivenTrade(msg);
+        break;
+      case "trade_cancel":
+        MP.pendingTrade = null;
+        toast((msg.fromName || "Player") + " declined the trade.");
+        break;
       case "error":
         toast(msg.message || "Error");
         break;
@@ -578,79 +599,243 @@
   }
 
   // Detect a click on the world canvas, find the nearest peer, open menu.
-  function onCanvasClick(e) {
-    if (!MP.started || MP.battle) return;
+  // Find a peer standing on a tile adjacent to me (up/down/left/right), same area.
+  // Prefers the peer in the direction I'm facing, else any adjacent peer.
+  function adjacentPeer() {
     const G = window.G;
-    const World = window.World;
-    if (!G || !G.player || !World) return;
-    const canvas = document.getElementById("world-canvas");
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const TILE = window.TILE || 16;
-    const VIEW_W = window.VIEW_W || 240, VIEW_H = window.VIEW_H || 160;
-    // map screen click to canvas internal coords
-    const cx = (e.clientX - rect.left) * (VIEW_W / rect.width);
-    const cy = (e.clientY - rect.top) * (VIEW_H / rect.height);
-    // camera (same as renderWorld)
-    const pw = G.player.px, ph = G.player.py;
-    const maxX = World.W * TILE - VIEW_W, maxY = World.H * TILE - VIEW_H;
-    let camX = Math.max(0, Math.min(maxX, pw - VIEW_W / 2 + 8));
-    let camY = Math.max(0, Math.min(maxY, ph - VIEW_H / 2 + 8));
+    if (!G || !G.player) return null;
     const myArea = currentArea();
-
-    // Forgiving hit test: pick the closest peer whose sprite box contains/near the click.
-    let best = null, bestD = 1e9;
-    for (const [id, p] of MP.peers) {
-      if (p.area !== myArea) continue;
-      const sx = p.px - camX, sy = p.py - camY; // sprite top-left (16x20)
-      const centerX = sx + 8, centerY = sy + 6;
-      // inside the sprite bounding box (with padding) OR within a generous radius
-      const inBox = cx >= sx - 6 && cx <= sx + 22 && cy >= sy - 10 && cy <= sy + 24;
-      const d = Math.hypot(centerX - cx, centerY - cy);
-      if (inBox || d < 22) {
-        if (d < bestD) { bestD = d; best = { id, p }; }
+    const px = G.player.tileX, py = G.player.tileY;
+    const dirVec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[G.player.dir] || [0, 1];
+    const facing = { x: px + dirVec[0], y: py + dirVec[1] };
+    const around = [
+      facing,
+      { x: px, y: py - 1 }, { x: px, y: py + 1 },
+      { x: px - 1, y: py }, { x: px + 1, y: py },
+    ];
+    for (const cell of around) {
+      for (const [id, p] of MP.peers) {
+        if (p.area !== myArea) continue;
+        if (p.tileX === cell.x && p.tileY === cell.y) return { id, p };
       }
     }
-    if (best) {
-      openPeerMenu(best.id, best.p, e.clientX, e.clientY);
-    } else if (MP.peers.size === 0) {
-      toast("No other trainers here yet.");
-    } else {
-      toast("Click directly on a trainer to interact.");
-    }
+    return null;
   }
 
-  function openPeerMenu(id, peer, x, y) {
-    const menu = document.getElementById("mp-menu");
-    const isBattling = MP.battling.includes(id);
-    let html = `<div class="mp-menu-name">${esc(peer.name)}</div>`;
-    if (isBattling) {
-      // They are battling -> the clicker chooses what to do (your requested options)
-      html += `<button class="gray" data-act="explore">KEEP EXPLORING</button>`;
-      html += `<button data-act="spectate">SPECTATE BATTLE</button>`;
-      html += `<button class="warn" data-act="notice">"BATTLE IN PROGRESS"</button>`;
-    } else {
-      html += `<button class="warn" data-act="invite">⚔ CHALLENGE TO BATTLE</button>`;
-      html += `<button class="gray" data-act="close">CANCEL</button>`;
-    }
-    menu.innerHTML = html;
-    menu.style.left = Math.min(x, window.innerWidth - 190) + "px";
-    menu.style.top = Math.min(y, window.innerHeight - 160) + "px";
+  // Called when the player presses A/Space. Returns true if it opened a peer
+  // interaction (so the game's own interact() should be suppressed).
+  function tryPeerInteract() {
+    if (!MP.started || MP.battle) return false;
+    if (document.getElementById("mp-menu").style.display === "block") return false;
+    const hit = adjacentPeer();
+    if (!hit) return false;
+    openPeerMenu(hit.id, hit.p);
+    return true;
+  }
+
+  // Center a menu on screen.
+  function placeMenuCenter(menu) {
+    menu.style.left = (window.innerWidth / 2 - 95) + "px";
+    menu.style.top = (window.innerHeight / 2 - 110) + "px";
     menu.style.display = "block";
+  }
+
+  // Main interaction menu shown when you talk to an adjacent player.
+  function openPeerMenu(id, peer) {
+    const menu = document.getElementById("mp-menu");
+    if (MP.battling.includes(id)) {
+      menu.innerHTML = `<div class="mp-menu-name">${esc(peer.name)}</div>
+        <button class="warn" data-act="notice">BATTLE IN PROGRESS</button>
+        <button class="gray" data-act="close">CLOSE</button>`;
+      placeMenuCenter(menu);
+      menu.querySelectorAll("button").forEach((b) => b.onclick = () => {
+        menu.style.display = "none";
+        if (b.dataset.act === "notice") toast(peer.name + " is in a battle. Please wait.");
+      });
+      return;
+    }
+    menu.innerHTML = `<div class="mp-menu-name">Talk to ${esc(peer.name)}</div>
+      <button class="warn" data-act="battle">⚔ REQUEST BATTLE</button>
+      <button data-act="money">💰 EXCHANGE MONEY</button>
+      <button data-act="give">🎁 GIVE ITEMS / POKEMON</button>
+      <button class="gray" data-act="close">CANCEL</button>`;
+    placeMenuCenter(menu);
     menu.querySelectorAll("button").forEach((b) => {
       b.onclick = () => {
         const act = b.dataset.act;
         menu.style.display = "none";
-        if (act === "invite") {
-          sendMsg("battle_invite", { target: id, mon: myBattleMon() });
-        } else if (act === "spectate") {
-          startSpectate(id, peer);
-        } else if (act === "notice") {
-          toast(peer.name + " is in a battle. Please wait.");
-        }
-        // explore / close / cancel -> just dismiss
+        if (act === "battle") sendMsg("battle_invite", { target: id, mon: myBattleMon() });
+        else if (act === "money") openMoneyMenu(id, peer);
+        else if (act === "give") openGiveMenu(id, peer);
       };
     });
+  }
+
+  /* ============================================================
+     TRADING: money, items, pokemon  (approacher = giver)
+     ============================================================ */
+  const moneyOf = () => (window.G && typeof window.G.money === "number") ? window.G.money : 0;
+
+  function openMoneyMenu(id, peer) {
+    const menu = document.getElementById("mp-menu");
+    menu.innerHTML = `<div class="mp-menu-name">Give money to ${esc(peer.name)}</div>
+      <div class="mp-trade-row">You have: $${moneyOf()}</div>
+      <input id="mp-money-amt" class="mp-trade-input" type="number" min="1" placeholder="Amount to give">
+      <button class="warn" data-act="send">SEND OFFER</button>
+      <button class="gray" data-act="back">BACK</button>`;
+    placeMenuCenter(menu);
+    menu.querySelector('[data-act="back"]').onclick = () => { menu.style.display = "none"; };
+    menu.querySelector('[data-act="send"]').onclick = () => {
+      const amt = Math.floor(Number(document.getElementById("mp-money-amt").value) || 0);
+      if (amt <= 0) return toast("Enter a valid amount.");
+      if (amt > moneyOf()) return toast("You don't have that much money.");
+      menu.style.display = "none";
+      MP.pendingTrade = { kind: "money", to: id, payload: { amount: amt } };
+      sendMsg("trade_offer", { target: id, kind: "money", payload: { amount: amt } });
+      toast(`Offered $${amt} to ${peer.name}. Waiting for them to accept…`);
+    };
+  }
+
+  function openGiveMenu(id, peer) {
+    const menu = document.getElementById("mp-menu");
+    menu.innerHTML = `<div class="mp-menu-name">Give to ${esc(peer.name)}</div>
+      <button data-act="items">🎒 GIVE AN ITEM</button>
+      <button data-act="pokemon">🔴 GIVE A POKEMON</button>
+      <button class="gray" data-act="back">BACK</button>`;
+    placeMenuCenter(menu);
+    menu.querySelector('[data-act="back"]').onclick = () => { menu.style.display = "none"; };
+    menu.querySelector('[data-act="items"]').onclick = () => openItemList(id, peer);
+    menu.querySelector('[data-act="pokemon"]').onclick = () => openPokemonList(id, peer);
+  }
+
+  function itemDefs() { return window.ITEM_DEFS || []; }
+
+  function openItemList(id, peer) {
+    const menu = document.getElementById("mp-menu");
+    const bag = (window.G && window.G.bag) || {};
+    const owned = itemDefs().filter((d) => (bag[d.key] || 0) > 0);
+    let rows = owned.length
+      ? owned.map((d) => `<button class="mp-list-btn" data-key="${d.key}">${esc(d.name)} <span class="mp-qty">x${bag[d.key]}</span></button>`).join("")
+      : `<div class="mp-trade-row">No items to give.</div>`;
+    menu.innerHTML = `<div class="mp-menu-name">Give an item to ${esc(peer.name)}</div>
+      <div class="mp-list">${rows}</div>
+      <button class="gray" data-act="back">BACK</button>`;
+    placeMenuCenter(menu);
+    menu.querySelector('[data-act="back"]').onclick = () => openGiveMenu(id, peer);
+    menu.querySelectorAll(".mp-list-btn").forEach((b) => {
+      b.onclick = () => {
+        const key = b.dataset.key;
+        const def = itemDefs().find((d) => d.key === key);
+        menu.style.display = "none";
+        MP.pendingTrade = { kind: "item", to: id, payload: { key, name: def ? def.name : key } };
+        sendMsg("trade_offer", { target: id, kind: "item", payload: { key, name: def ? def.name : key } });
+        toast(`Offered ${def ? def.name : key} to ${peer.name}. Waiting…`);
+      };
+    });
+  }
+
+  function openPokemonList(id, peer) {
+    const menu = document.getElementById("mp-menu");
+    const party = (window.G && window.G.party) || [];
+    // You can't give away your last Pokemon.
+    const giveable = party.length > 1 ? party : [];
+    let rows = giveable.length
+      ? party.map((mon, i) => `<button class="mp-list-btn" data-idx="${i}">${esc(mon.name)} <span class="mp-qty">Lv${mon.level || 50}</span></button>`).join("")
+      : `<div class="mp-trade-row">You can't give your only Pokemon.</div>`;
+    menu.innerHTML = `<div class="mp-menu-name">Give a Pokemon to ${esc(peer.name)}</div>
+      <div class="mp-list">${rows}</div>
+      <button class="gray" data-act="back">BACK</button>`;
+    placeMenuCenter(menu);
+    menu.querySelector('[data-act="back"]').onclick = () => openGiveMenu(id, peer);
+    menu.querySelectorAll(".mp-list-btn").forEach((b) => {
+      b.onclick = () => {
+        const idx = Number(b.dataset.idx);
+        const mon = party[idx];
+        if (!mon) return;
+        menu.style.display = "none";
+        // serialize the full mon so the receiver can add it to their party
+        const monData = JSON.parse(JSON.stringify(mon));
+        MP.pendingTrade = { kind: "pokemon", to: id, idx, payload: { mon: monData } };
+        sendMsg("trade_offer", { target: id, kind: "pokemon", payload: { mon: monData } });
+        toast(`Offered ${mon.name} to ${peer.name}. Waiting…`);
+      };
+    });
+  }
+
+  // ---- Incoming offer (I am the RECIPIENT) ----
+  function showTradeOffer(msg) {
+    const menu = document.getElementById("mp-menu");
+    let desc = "";
+    if (msg.kind === "money") desc = `wants to give you <b>$${msg.payload.amount}</b>`;
+    else if (msg.kind === "item") desc = `wants to give you <b>${esc(msg.payload.name || msg.payload.key)}</b>`;
+    else if (msg.kind === "pokemon") desc = `wants to give you <b>${esc(msg.payload.mon.name)}</b> (Lv${msg.payload.mon.level || 50})`;
+    menu.innerHTML = `<div class="mp-menu-name">${esc(msg.fromName)} ${desc}</div>
+      <button class="warn" data-act="accept">ACCEPT</button>
+      <button class="gray" data-act="decline">DECLINE</button>`;
+    placeMenuCenter(menu);
+    menu.querySelector('[data-act="accept"]').onclick = () => {
+      menu.style.display = "none";
+      applyReceived(msg.kind, msg.payload);
+      // tell the giver to finalize (deduct on their side)
+      sendMsg("trade_confirm", { target: msg.from, kind: msg.kind, payload: msg.payload });
+      let what = msg.kind === "money" ? `$${msg.payload.amount}`
+        : msg.kind === "item" ? (msg.payload.name || msg.payload.key)
+        : msg.payload.mon.name;
+      toast(`Received ${what} from ${msg.fromName}!`);
+      addChat(null, `You received ${what} from ${msg.fromName}.`);
+    };
+    menu.querySelector('[data-act="decline"]').onclick = () => {
+      menu.style.display = "none";
+      sendMsg("trade_cancel", { target: msg.from });
+    };
+  }
+
+  // Recipient applies the received gift to their own game state.
+  function applyReceived(kind, payload) {
+    const G = window.G;
+    if (!G) return;
+    if (kind === "money") {
+      G.money = (G.money || 0) + Math.max(0, Math.floor(payload.amount || 0));
+    } else if (kind === "item") {
+      G.bag = G.bag || {};
+      G.bag[payload.key] = (G.bag[payload.key] || 0) + 1;
+    } else if (kind === "pokemon") {
+      G.party = G.party || [];
+      const mon = payload.mon;
+      // ensure required battle fields exist
+      mon.currentHp = mon.currentHp != null ? mon.currentHp : (mon.maxHp || mon.hp);
+      mon.statMods = mon.statMods || { attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0 };
+      if (G.party.length < 6) G.party.push(mon);
+      else toast("Party full — Pokemon could not be added.");
+    }
+  }
+
+  // ---- Giver finalizes after recipient accepted (I am the GIVER) ----
+  function finalizeGivenTrade(msg) {
+    const G = window.G;
+    const t = MP.pendingTrade;
+    MP.pendingTrade = null;
+    if (!G) return;
+    if (msg.kind === "money") {
+      G.money = Math.max(0, (G.money || 0) - Math.floor(msg.payload.amount || 0));
+      addChat(null, `You gave $${msg.payload.amount} to ${msg.fromName}.`);
+      toast(`Gave $${msg.payload.amount} to ${msg.fromName}.`);
+    } else if (msg.kind === "item") {
+      if (G.bag && G.bag[msg.payload.key]) {
+        G.bag[msg.payload.key] = Math.max(0, G.bag[msg.payload.key] - 1);
+      }
+      addChat(null, `You gave ${msg.payload.name || msg.payload.key} to ${msg.fromName}.`);
+      toast(`Gave ${msg.payload.name || msg.payload.key} to ${msg.fromName}.`);
+    } else if (msg.kind === "pokemon") {
+      // remove the given mon from our party (by idx captured at offer time)
+      if (t && typeof t.idx === "number" && G.party && G.party.length > 1) {
+        G.party.splice(t.idx, 1);
+        if (G.partnerIdx >= G.party.length) G.partnerIdx = 0;
+        G.partner = G.party[G.partnerIdx];
+      }
+      addChat(null, `You gave ${msg.payload.mon.name} to ${msg.fromName}.`);
+      toast(`Gave ${msg.payload.mon.name} to ${msg.fromName}.`);
+    }
   }
 
   function startSpectate(id, peer) {
@@ -849,22 +1034,30 @@
       }
     });
 
-    // PvP: click a peer in the overworld. Attach to the canvas AND the world
-    // container so a click can't be swallowed by a layered element.
-    const wc = document.getElementById("world-canvas");
-    if (wc) wc.addEventListener("click", (e) => { e.stopPropagation(); onCanvasClick(e); });
-    const ws = document.getElementById("world-screen");
-    if (ws) ws.addEventListener("click", (e) => {
-      // only handle if the click was on the canvas region (ignore HUD buttons)
-      if (e.target && (e.target.id === "world-canvas" || e.target.id === "world-screen")) {
-        e.stopPropagation(); onCanvasClick(e);
+    // PvP / TALK: press A / Space / Enter while standing next to another player to
+    // open the interaction menu (battle / money / give). Use capture phase so we
+    // can suppress the game's own interact() when a peer is adjacent.
+    window.addEventListener("keydown", (e) => {
+      if (!MP.started || MP.battle) return;
+      const tag = (document.activeElement && document.activeElement.tagName) || "";
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      const k = e.key;
+      if (k === " " || k === "Enter") {
+        // only intercept when actually in the overworld and a peer is adjacent
+        const ws2 = document.getElementById("world-screen");
+        if (!ws2 || ws2.style.display !== "flex") return;
+        if (tryPeerInteract()) {
+          // block the game's interact() so we don't also talk to an NPC
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
       }
-    });
-    // dismiss context menu on outside click
+    }, true); // capture = true so we run before the game's document keydown
+
+    // dismiss the interaction menu on outside click
     document.addEventListener("click", (e) => {
       const menu = document.getElementById("mp-menu");
-      if (menu.style.display === "block" && !menu.contains(e.target) &&
-          e.target.id !== "world-canvas" && e.target.id !== "world-screen") {
+      if (menu.style.display === "block" && !menu.contains(e.target)) {
         menu.style.display = "none";
       }
     });
@@ -1031,7 +1224,24 @@
       el.addEventListener("touchend", (e) => { handled = true; trigger(e); setTimeout(() => (handled = false), 400); }, { passive: false });
       el.addEventListener("click", (e) => { if (handled) return; trigger(e); });
     };
-    tapButton(document.getElementById("mp-a-btn"), "space"); // SPACE = interact/advance
+    // A button: if standing next to another player, open the talk menu directly;
+    // otherwise fall back to the game's interact/advance (synthetic Space).
+    (function wireAButton() {
+      const el = document.getElementById("mp-a-btn");
+      let handled = false;
+      const trigger = (e) => {
+        e.preventDefault();
+        el.classList.add("pressed");
+        setTimeout(() => el.classList.remove("pressed"), 120);
+        const ws2 = document.getElementById("world-screen");
+        const inWorld = ws2 && ws2.style.display === "flex";
+        if (MP.started && !MP.battle && inWorld && tryPeerInteract()) return; // opened talk menu
+        fireKey("space", "keydown");
+        fireKey("space", "keyup");
+      };
+      el.addEventListener("touchend", (e) => { handled = true; trigger(e); setTimeout(() => (handled = false), 400); }, { passive: false });
+      el.addEventListener("click", (e) => { if (handled) return; trigger(e); });
+    })();
     tapButton(document.getElementById("mp-b-btn"), "b");       // ESC = back/close
 
     // BAG / PARTY -> click the game's own buttons (they exist in the world UI)

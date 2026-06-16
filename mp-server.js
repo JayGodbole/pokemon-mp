@@ -348,6 +348,38 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    // ---------- TRADING / GIVING (money, items, pokemon) ----------
+    // Generic relay: forward an offer/confirm/cancel to a specific target player.
+    // The server validates only that the target exists & is in the room; clients
+    // apply the actual changes to their own game state on confirm.
+    if (type === "trade_offer") {
+      // msg: { target, kind:'money'|'item'|'pokemon', payload:{...} }
+      const target = room.players.get(Number(msg.target));
+      if (!target) return send(ws, "error", { message: "Player not found." });
+      if (target.id === me.id) return;
+      if (me.battleId || target.battleId) return send(ws, "error", { message: "Can't trade during a battle." });
+      send(target.ws, "trade_offer", {
+        from: me.id, fromName: me.name,
+        kind: String(msg.kind || ""), payload: msg.payload || {},
+      });
+      return;
+    }
+    if (type === "trade_confirm") {
+      // msg: { target, kind, payload }  -> recipient accepted; tell giver to finalize
+      const target = room.players.get(Number(msg.target));
+      if (!target) return;
+      send(target.ws, "trade_confirm", {
+        from: me.id, fromName: me.name,
+        kind: String(msg.kind || ""), payload: msg.payload || {},
+      });
+      return;
+    }
+    if (type === "trade_cancel") {
+      const target = room.players.get(Number(msg.target));
+      if (target) send(target.ws, "trade_cancel", { from: me.id, fromName: me.name });
+      return;
+    }
+
     if (type === "chat") {
       const text = clean(msg.text, 200).trim();
       if (!text) return;

@@ -4,7 +4,7 @@ Run: python3 build.py
 Place the original game HTML path in SRC."""
 import re, os
 
-SRC = os.environ.get("GAME_SRC", "/home/user/uploads/pokemon_dino_edition_fixed version 2.html")
+SRC = os.environ.get("GAME_SRC", "game-src.html")
 OUT = os.path.join(os.path.dirname(__file__), "public", "index.html")
 MPJS = os.path.join(os.path.dirname(__file__), "mp-client.js")
 
@@ -29,6 +29,7 @@ try {
   if (typeof SPRITE_BACK !== 'undefined') window.SPRITE_BACK = SPRITE_BACK;
   if (typeof SPRITE_ANIM !== 'undefined') window.SPRITE_ANIM = SPRITE_ANIM;
   if (typeof SPRITE_BACK_ANIM !== 'undefined') window.SPRITE_BACK_ANIM = SPRITE_BACK_ANIM;
+  if (typeof ITEM_DEFS !== 'undefined') window.ITEM_DEFS = ITEM_DEFS;
   (function syncGlobals(){
     try {
       if (typeof G !== 'undefined') window.G = G;
