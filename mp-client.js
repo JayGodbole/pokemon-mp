@@ -661,12 +661,13 @@
       <button class="gray" data-act="close">CANCEL</button>`;
     placeMenuCenter(menu);
     menu.querySelectorAll("button").forEach((b) => {
-      b.onclick = () => {
+      b.onclick = (ev) => {
+        ev.stopPropagation();
         const act = b.dataset.act;
-        menu.style.display = "none";
-        if (act === "battle") sendMsg("battle_invite", { target: id, mon: myBattleMon() });
-        else if (act === "money") openMoneyMenu(id, peer);
-        else if (act === "give") openGiveMenu(id, peer);
+        if (act === "battle") { menu.style.display = "none"; sendMsg("battle_invite", { target: id, mon: myBattleMon() }); }
+        else if (act === "money") openMoneyMenu(id, peer);   // navigates (re-renders menu)
+        else if (act === "give") openGiveMenu(id, peer);     // navigates
+        else menu.style.display = "none";                    // close/cancel
       };
     });
   }
@@ -684,8 +685,9 @@
       <button class="warn" data-act="send">SEND OFFER</button>
       <button class="gray" data-act="back">BACK</button>`;
     placeMenuCenter(menu);
-    menu.querySelector('[data-act="back"]').onclick = () => { menu.style.display = "none"; };
-    menu.querySelector('[data-act="send"]').onclick = () => {
+    menu.querySelector('[data-act="back"]').onclick = (ev) => { ev.stopPropagation(); menu.style.display = "none"; };
+    menu.querySelector('[data-act="send"]').onclick = (ev) => {
+      ev.stopPropagation();
       const amt = Math.floor(Number(document.getElementById("mp-money-amt").value) || 0);
       if (amt <= 0) return toast("Enter a valid amount.");
       if (amt > moneyOf()) return toast("You don't have that much money.");
@@ -703,9 +705,9 @@
       <button data-act="pokemon">🔴 GIVE A POKEMON</button>
       <button class="gray" data-act="back">BACK</button>`;
     placeMenuCenter(menu);
-    menu.querySelector('[data-act="back"]').onclick = () => { menu.style.display = "none"; };
-    menu.querySelector('[data-act="items"]').onclick = () => openItemList(id, peer);
-    menu.querySelector('[data-act="pokemon"]').onclick = () => openPokemonList(id, peer);
+    menu.querySelector('[data-act="back"]').onclick = (ev) => { ev.stopPropagation(); menu.style.display = "none"; };
+    menu.querySelector('[data-act="items"]').onclick = (ev) => { ev.stopPropagation(); openItemList(id, peer); };
+    menu.querySelector('[data-act="pokemon"]').onclick = (ev) => { ev.stopPropagation(); openPokemonList(id, peer); };
   }
 
   function itemDefs() { return window.ITEM_DEFS || []; }
@@ -721,9 +723,10 @@
       <div class="mp-list">${rows}</div>
       <button class="gray" data-act="back">BACK</button>`;
     placeMenuCenter(menu);
-    menu.querySelector('[data-act="back"]').onclick = () => openGiveMenu(id, peer);
+    menu.querySelector('[data-act="back"]').onclick = (ev) => { ev.stopPropagation(); openGiveMenu(id, peer); };
     menu.querySelectorAll(".mp-list-btn").forEach((b) => {
-      b.onclick = () => {
+      b.onclick = (ev) => {
+        ev.stopPropagation();
         const key = b.dataset.key;
         const def = itemDefs().find((d) => d.key === key);
         menu.style.display = "none";
@@ -746,9 +749,10 @@
       <div class="mp-list">${rows}</div>
       <button class="gray" data-act="back">BACK</button>`;
     placeMenuCenter(menu);
-    menu.querySelector('[data-act="back"]').onclick = () => openGiveMenu(id, peer);
+    menu.querySelector('[data-act="back"]').onclick = (ev) => { ev.stopPropagation(); openGiveMenu(id, peer); };
     menu.querySelectorAll(".mp-list-btn").forEach((b) => {
-      b.onclick = () => {
+      b.onclick = (ev) => {
+        ev.stopPropagation();
         const idx = Number(b.dataset.idx);
         const mon = party[idx];
         if (!mon) return;
@@ -773,7 +777,8 @@
       <button class="warn" data-act="accept">ACCEPT</button>
       <button class="gray" data-act="decline">DECLINE</button>`;
     placeMenuCenter(menu);
-    menu.querySelector('[data-act="accept"]').onclick = () => {
+    menu.querySelector('[data-act="accept"]').onclick = (ev) => {
+      ev.stopPropagation();
       menu.style.display = "none";
       applyReceived(msg.kind, msg.payload);
       // tell the giver to finalize (deduct on their side)
@@ -784,7 +789,8 @@
       toast(`Received ${what} from ${msg.fromName}!`);
       addChat(null, `You received ${what} from ${msg.fromName}.`);
     };
-    menu.querySelector('[data-act="decline"]').onclick = () => {
+    menu.querySelector('[data-act="decline"]').onclick = (ev) => {
+      ev.stopPropagation();
       menu.style.display = "none";
       sendMsg("trade_cancel", { target: msg.from });
     };
@@ -1054,12 +1060,27 @@
       }
     }, true); // capture = true so we run before the game's document keydown
 
-    // dismiss the interaction menu on outside click
+    // dismiss the interaction menu on outside click.
+    // IMPORTANT: use the capture phase + check the ORIGINAL target's ancestry at
+    // click time. Menu buttons replace the menu's innerHTML, which detaches the
+    // clicked node, so a later contains() check would wrongly report "outside" and
+    // close the freshly-opened sub-menu. We instead record whether the press began
+    // inside the menu via mousedown/touchstart.
+    let pressInsideMenu = false;
+    const markPress = (e) => {
+      const menu = document.getElementById("mp-menu");
+      pressInsideMenu = !!(e.target && e.target.closest && e.target.closest("#mp-menu"));
+    };
+    document.addEventListener("mousedown", markPress, true);
+    document.addEventListener("touchstart", markPress, true);
     document.addEventListener("click", (e) => {
       const menu = document.getElementById("mp-menu");
-      if (menu.style.display === "block" && !menu.contains(e.target)) {
-        menu.style.display = "none";
-      }
+      if (menu.style.display !== "block") return;
+      // ignore clicks on the on-screen A button (it may have just opened the menu)
+      if (e.target && e.target.closest && e.target.closest("#mp-a-btn")) return;
+      // if the press started inside the menu, this click belongs to the menu -> keep open
+      if (pressInsideMenu) { pressInsideMenu = false; return; }
+      menu.style.display = "none";
     });
 
     // battle overlay buttons
