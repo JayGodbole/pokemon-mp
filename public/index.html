@@ -5982,35 +5982,61 @@ try {
     peers: new Map(),
     objects: new Map(),
     placeMode: null,
+    rot: 0,                 // current rotation for the part being placed (0-3)
     lastSent: 0, lastSig: "",
     frame: 0,
     stepsSinceBattle: 0,
+    profileName: null,      // server profile (name+PIN)
   };
   const BT = 16;                 // SAME tile size as the overworld
   const BVIEW_W = 240, BVIEW_H = 160; // SAME internal view as the overworld (CSS upscales)
 
+  // ARK-style modular parts (cat) + whole structures. All 1x1 parts are rotatable.
   const BUILD_CATALOG = [
-    { key: "land",     name: "Land Plot",   price: 500,   color: "#caa15a" },
-    { key: "tree",     name: "Tree",        price: 100,   color: "#2e7d32" },
-    { key: "flower",   name: "Flowerbed",   price: 80,    color: "#e573a0" },
-    { key: "fence",    name: "Fence",       price: 60,    color: "#caa46a" },
-    { key: "lamp",     name: "Lamp Post",   price: 250,   color: "#cfd4da" },
-    { key: "house",    name: "House",       price: 3000,  color: "#d9a066" },
-    { key: "mansion",  name: "Mansion",     price: 12000, color: "#c9b59a" },
-    { key: "shop",     name: "Shop",        price: 6000,  color: "#e0c27a" },
-    { key: "pool",     name: "Pool",        price: 4000,  color: "#39b6e0" },
-    { key: "car",      name: "Car",         price: 8000,  color: "#d83838" },
-    { key: "bike",     name: "Bike",        price: 1500,  color: "#2f6cc4" },
-    { key: "boat",     name: "Boat",        price: 10000, color: "#8d6e63" },
+    // --- terrain / base ---
+    { key: "foundation", name: "Foundation", price: 120, color: "#7d6b55", cat: "Base" },
+    { key: "floor_wood", name: "Wood Floor", price: 60,  color: "#caa46a", cat: "Base" },
+    { key: "floor_stone",name: "Stone Floor",price: 90,  color: "#9aa0a6", cat: "Base" },
+    { key: "land",       name: "Land/Farm",  price: 200, color: "#a9763e", cat: "Base" },
+    // --- walls ---
+    { key: "wall_wood",  name: "Wood Wall",  price: 100, color: "#b07a3c", cat: "Walls", rotatable: true },
+    { key: "wall_stone", name: "Stone Wall", price: 160, color: "#8b9097", cat: "Walls", rotatable: true },
+    { key: "doorway",    name: "Doorway",    price: 140, color: "#b07a3c", cat: "Walls", rotatable: true },
+    { key: "window",     name: "Window Wall",price: 130, color: "#b07a3c", cat: "Walls", rotatable: true },
+    { key: "gate",       name: "Gate",       price: 180, color: "#9c6b34", cat: "Walls", rotatable: true },
+    { key: "pillar",     name: "Pillar",     price: 70,  color: "#9aa0a6", cat: "Walls" },
+    // --- roof / vertical ---
+    { key: "roof",       name: "Roof",       price: 110, color: "#b5532f", cat: "Roof", rotatable: true },
+    { key: "stairs",     name: "Stairs",     price: 120, color: "#a98c5a", cat: "Roof", rotatable: true },
+    // --- utility / decor ---
+    { key: "storage",    name: "Storage Box",price: 150, color: "#8a5a2a", cat: "Utility" },
+    { key: "campfire",   name: "Campfire",   price: 90,  color: "#ff7a1a", cat: "Utility" },
+    { key: "fence",      name: "Fence",      price: 60,  color: "#caa46a", cat: "Decor", rotatable: true },
+    { key: "lamp",       name: "Lamp Post",  price: 250, color: "#cfd4da", cat: "Decor" },
+    { key: "flower",     name: "Flowerbed",  price: 80,  color: "#e573a0", cat: "Decor" },
+    { key: "tree",       name: "Tree",       price: 100, color: "#2e7d32", cat: "Decor" },
+    { key: "sign",       name: "Sign",       price: 50,  color: "#caa46a", cat: "Decor", rotatable: true },
+    // --- prefab whole structures ---
+    { key: "house",      name: "House",      price: 3000, color: "#d9a066", cat: "Prefab" },
+    { key: "mansion",    name: "Mansion",    price: 12000,color: "#c9b59a", cat: "Prefab" },
+    { key: "shop",       name: "Shop",       price: 6000, color: "#e0c27a", cat: "Prefab" },
+    { key: "pool",       name: "Pool",       price: 4000, color: "#39b6e0", cat: "Prefab" },
+    // --- vehicles ---
+    { key: "car",        name: "Car",        price: 8000, color: "#d83838", cat: "Vehicle" },
+    { key: "bike",       name: "Bike",       price: 1500, color: "#2f6cc4", cat: "Vehicle" },
+    { key: "boat",       name: "Boat",       price: 10000,color: "#8d6e63", cat: "Vehicle" },
   ];
   const catInfo = (k) => BUILD_CATALOG.find((c) => c.key === k);
   const VEHICLES = { car: 0.30, bike: 0.24, boat: 0.28 };
   // Building footprints (w x h in tiles). Buildings are large & enterable.
   const FOOTPRINT = { house: { w: 3, h: 3 }, shop: { w: 3, h: 3 }, pool: { w: 3, h: 2 }, mansion: { w: 4, h: 4 } };
   const ENTERABLE = { house: 1, mansion: 1, shop: 1 };
-  const SOLID_OBJ = { lamp: 1 }; // single-tile solids besides fence/tree
-  // Solid (can't walk through): fences, trees, and building tiles (except their door).
-  const SOLID = { tree: 1, house: 1, mansion: 1, shop: 1, pool: 1, fence: 1, lamp: 1 };
+  // Solid (can't walk through). Walls/pillars/etc. block; floors/roofs/decor-on-ground don't.
+  const SOLID = {
+    tree: 1, house: 1, mansion: 1, shop: 1, pool: 1, fence: 1, lamp: 1,
+    wall_wood: 1, wall_stone: 1, window: 1, pillar: 1, storage: 1, sign: 1,
+  };
+  // doorway & gate are walkable (you pass through). foundation/floors/roof/land/flower/campfire/stairs walkable.
 
   function hash2(x, y) {
     let h = (x * 374761393 + y * 668265263) ^ 0x5bd1e995;
@@ -6030,12 +6056,16 @@ try {
       #mp-builder.show{display:flex;}
       #bld-canvas{width:min(96vw,720px);height:auto;aspect-ratio:3/2;image-rendering:pixelated;display:block;background:#62a045;border:4px solid #222;border-radius:6px;}
       #bld-hud{position:fixed;top:10px;left:10px;right:10px;display:flex;justify-content:space-between;align-items:flex-start;pointer-events:none;z-index:10081;}
-      #bld-wallet{background:rgba(15,24,48,.9);color:#7CFC9A;border:2px solid #FFD700;border-radius:8px;padding:8px 12px;font-size:9px;pointer-events:auto;}
-      #bld-top-right{display:flex;gap:6px;pointer-events:auto;}
+      #bld-hud-left{display:flex;flex-direction:column;gap:6px;pointer-events:auto;}
+      #bld-wallet{background:rgba(15,24,48,.9);color:#7CFC9A;border:2px solid #FFD700;border-radius:8px;padding:8px 12px;font-size:9px;}
+      #bld-coords{background:rgba(15,24,48,.9);color:#9fd6ff;border:2px solid #4fc3f7;border-radius:8px;padding:6px 10px;font-size:8px;}
+      #bld-top-right{display:flex;gap:6px;pointer-events:auto;flex-wrap:wrap;justify-content:flex-end;max-width:60vw;}
       .bld-btn{background:#FFD700;color:#111;border:none;border-radius:8px;padding:8px 11px;font-size:8px;font-family:'Press Start 2P',monospace;cursor:pointer;box-shadow:0 3px 0 #b8860b;}
       .bld-btn.red{background:#8B0000;color:#fff;box-shadow:0 3px 0 #5a0000;}
       .bld-btn.blue{background:#4fc3f7;color:#062a3a;box-shadow:0 3px 0 #0277bd;}
-      #bld-palette{position:fixed;left:10px;bottom:10px;right:10px;display:none;flex-wrap:wrap;gap:6px;background:rgba(15,24,48,.92);border:2px solid #FFD700;border-radius:10px;padding:8px;max-height:34vh;overflow:auto;z-index:10081;}
+      .bld-btn.green{background:#4CAF50;color:#fff;box-shadow:0 3px 0 #2e7d32;}
+      #bld-palette{position:fixed;left:10px;bottom:10px;right:10px;display:none;flex-wrap:wrap;gap:6px;background:rgba(15,24,48,.92);border:2px solid #FFD700;border-radius:10px;padding:8px;max-height:38vh;overflow:auto;z-index:10081;}
+      .bld-cat-label{flex-basis:100%;color:#FFD700;font-size:7px;margin:4px 0 0;opacity:.85;}
       #bld-palette.show{display:flex;}
       .bld-item{background:#2b3350;color:#fff;border:2px solid transparent;border-radius:8px;padding:8px;font-size:7px;cursor:pointer;min-width:84px;text-align:center;}
       .bld-item .p{color:#FFD700;display:block;margin-top:4px;}
@@ -6057,6 +6087,13 @@ try {
       #bld-interior{position:fixed;inset:0;z-index:10095;background:rgba(0,0,0,.8);display:none;align-items:center;justify-content:center;padding:16px;}
       #bld-interior.show{display:flex;}
       #bld-int-box{background:#16213e;border:3px solid #FFD700;border-radius:12px;width:340px;max-width:94vw;padding:16px;color:#fff;display:flex;flex-direction:column;gap:8px;}
+      /* login overlay */
+      #bld-login{position:fixed;inset:0;z-index:10096;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;padding:16px;font-family:'Press Start 2P',monospace;}
+      #bld-login.show{display:flex;}
+      #bld-login-box{background:#16213e;border:3px solid #43a047;border-radius:12px;width:340px;max-width:94vw;padding:18px;color:#fff;display:flex;flex-direction:column;gap:10px;}
+      #bld-login-title{color:#8bc34a;font-size:12px;text-align:center;}
+      #bld-login input{padding:11px;border-radius:8px;border:2px solid #0f3460;background:#0f1830;color:#fff;font-family:'Press Start 2P',monospace;font-size:11px;text-align:center;outline:none;}
+      #bld-login-err{color:#ff7b7b;font-size:7px;text-align:center;min-height:10px;line-height:1.5;}
       #bld-int-title{color:#FFD700;font-size:12px;text-align:center;margin-bottom:6px;}
       .bld-int-row{font-size:8px;color:#cfe;line-height:1.6;text-align:center;margin-bottom:6px;}
       .bld-tbtn{padding:11px;border:none;border-radius:8px;cursor:pointer;background:#4fc3f7;color:#062a3a;font-family:'Press Start 2P',monospace;font-size:8px;}
@@ -6068,15 +6105,20 @@ try {
     div.innerHTML = `
       <canvas id="bld-canvas" width="${BVIEW_W}" height="${BVIEW_H}"></canvas>
       <div id="bld-hud">
-        <div id="bld-wallet">$0</div>
+        <div id="bld-hud-left">
+          <div id="bld-wallet">$0</div>
+          <div id="bld-coords">X:0  Y:0</div>
+        </div>
         <div id="bld-top-right">
           <button class="bld-btn" id="bld-build">🏗️ BUILD</button>
-          <button class="bld-btn blue" id="bld-ride">🚗 RIDE/OFF</button>
+          <button class="bld-btn" id="bld-rotbtn"><span id="bld-rot">↻ 0°</span></button>
+          <button class="bld-btn blue" id="bld-ride">🚗 RIDE</button>
+          <button class="bld-btn green" id="bld-save">💾 SAVE</button>
           <button class="bld-btn red" id="bld-exit">✕ EXIT</button>
         </div>
       </div>
       <div id="bld-palette"></div>
-      <div id="bld-hint">WASD/Arrows move · walk tall grass to find wild Pokemon · BUILD to place · X remove · E ride · enter buildings via the door</div>
+      <div id="bld-hint">WASD move · BUILD to place parts · R rotate · X remove · E ride · build walls/floors/roofs ARK-style</div>
       <!-- on-screen controls for phones -->
       <div id="bld-touch">
         <div id="bld-dpad">
@@ -6109,18 +6151,26 @@ try {
     B.ctx.imageSmoothingEnabled = false;
 
     const pal = document.getElementById("bld-palette");
-    BUILD_CATALOG.forEach((c) => {
-      const el = document.createElement("div");
-      el.className = "bld-item"; el.dataset.key = c.key;
-      el.innerHTML = `${c.name}<span class="p">$${c.price}</span>`;
-      el.onclick = () => { B.placeMode = c.key; updatePaletteActive(); bToast("Tap a tile to place " + c.name); };
-      pal.appendChild(el);
+    // group palette by category (ARK-style parts menu)
+    const cats = [];
+    BUILD_CATALOG.forEach((c) => { if (!cats.includes(c.cat || "Other")) cats.push(c.cat || "Other"); });
+    cats.forEach((cat) => {
+      const lab = document.createElement("div"); lab.className = "bld-cat-label"; lab.textContent = cat; pal.appendChild(lab);
+      BUILD_CATALOG.filter((c) => (c.cat || "Other") === cat).forEach((c) => {
+        const el = document.createElement("div");
+        el.className = "bld-item"; el.dataset.key = c.key;
+        el.innerHTML = `${c.name}<span class="p">$${c.price}</span>`;
+        el.onclick = () => { B.placeMode = c.key; updatePaletteActive(); bToast((c.rotatable ? "R to rotate · " : "") + "Tap a tile to place " + c.name); };
+        pal.appendChild(el);
+      });
     });
     document.getElementById("bld-build").onclick = () => {
       pal.classList.toggle("show");
       if (!pal.classList.contains("show")) { B.placeMode = null; updatePaletteActive(); }
     };
+    document.getElementById("bld-rotbtn").onclick = () => { B.rot = (B.rot + 1) % 4; updateRotLabel(); bToast("Rotation: " + (B.rot * 90) + "°"); };
     document.getElementById("bld-ride").onclick = toggleRide;
+    document.getElementById("bld-save").onclick = saveBuilderProgress;
     document.getElementById("bld-exit").onclick = closeBuilder;
     B.canvas.addEventListener("click", onBuilderClick);
     window.addEventListener("keydown", builderKeyDown);
@@ -6153,26 +6203,64 @@ try {
   /* ---------- open / close ---------- */
   function openBuilder() {
     buildBuilderDOM();
-    if (!MP.connected) connect().then(doOpenBuilder).catch(() => bToast("Can't reach server."));
-    else doOpenBuilder();
+    showBuilderLogin();
+  }
+  // Name + PIN login so each player's progress is saved on the server.
+  function showBuilderLogin() {
+    let lg = document.getElementById("bld-login");
+    if (!lg) {
+      lg = document.createElement("div"); lg.id = "bld-login";
+      lg.innerHTML = `<div id="bld-login-box">
+        <div id="bld-login-title">ENTER BUILDER WORLD</div>
+        <div class="bld-int-row">Your progress (money, items, location & builds) is saved on the server under your name + PIN.</div>
+        <input id="bld-name" maxlength="16" placeholder="NAME" autocomplete="off">
+        <input id="bld-pin" maxlength="8" placeholder="PIN (e.g. 1234)" inputmode="numeric" autocomplete="off">
+        <button class="bld-tbtn green" id="bld-login-go">ENTER WORLD</button>
+        <button class="bld-tbtn red" id="bld-login-cancel">CANCEL</button>
+        <div id="bld-login-err"></div>
+      </div>`;
+      document.body.appendChild(lg);
+      document.getElementById("bld-login-cancel").onclick = () => { lg.classList.remove("show"); };
+      document.getElementById("bld-login-go").onclick = () => {
+        const name = (document.getElementById("bld-name").value || "").trim().slice(0, 16);
+        const pin = (document.getElementById("bld-pin").value || "").trim().slice(0, 8);
+        if (name.length < 2) { document.getElementById("bld-login-err").textContent = "Name must be 2+ characters."; return; }
+        if (pin.length < 3) { document.getElementById("bld-login-err").textContent = "PIN must be 3+ characters."; return; }
+        B._loginCreds = { name, pin };
+        MP.name = name;
+        try { localStorage.setItem("pokemon_dino_builder_name", name); localStorage.setItem("pokemon_dino_builder_pin", pin); } catch (e) {}
+        lg.classList.remove("show");
+        if (!MP.connected) connect().then(doOpenBuilder).catch(() => bToast("Can't reach server."));
+        else doOpenBuilder();
+      };
+    }
+    // prefill last used
+    try {
+      document.getElementById("bld-name").value = localStorage.getItem("pokemon_dino_builder_name") || "";
+      document.getElementById("bld-pin").value = localStorage.getItem("pokemon_dino_builder_pin") || "";
+    } catch (e) {}
+    document.getElementById("bld-login-err").textContent = "";
+    lg.classList.add("show");
   }
   function doOpenBuilder() {
     B.on = true; B.inBattle = false;
-    // restore last saved location so you spawn where you left off
-    let sx = 0, sy = 0;
-    try { const s = JSON.parse(localStorage.getItem("pokemon_dino_builder_pos") || "null"); if (s) { sx = s.x | 0; sy = s.y | 0; } } catch (e) {}
-    B.player = { x: sx, y: sy, px: sx * BT, py: sy * BT, dir: "down", moving: false, vehicle: null, tx: sx, ty: sy, t: 1, fx: sx, fy: sy };
+    B.player = { x: 0, y: 0, px: 0, py: 0, dir: "down", moving: false, vehicle: null, tx: 0, ty: 0, t: 1, fx: 0, fy: 0 };
     if (window.G) { window.G.mode = "adventure"; window.G.worldPaused = false; }
     ensureBuilderParty();
     document.getElementById("mp-builder").classList.add("show");
     refreshBWallet();
-    MP.name = MP.name || "Builder";
-    sendMsg("builder_join", { name: MP.name });
+    const creds = B._loginCreds || { name: MP.name || "Builder", pin: "" };
+    sendMsg("builder_join", { name: creds.name, pin: creds.pin });
+    // autosave progress every 20s
+    if (B._autoSave) clearInterval(B._autoSave);
+    B._autoSave = setInterval(() => { if (B.on) saveBuilderProgress(true); }, 20000);
     if (!B.raf) builderLoop();
   }
   function closeBuilder() {
     if (!B.on) return;
+    saveBuilderProgress(true);    // persist progress to server on exit
     B.on = false;
+    if (B._autoSave) { clearInterval(B._autoSave); B._autoSave = null; }
     sendMsg("builder_leave", {});
     document.getElementById("mp-builder").classList.remove("show");
     if (B.raf) { cancelAnimationFrame(B.raf); B.raf = null; }
@@ -6202,8 +6290,10 @@ try {
     if (map[k]) { B.held = map[k]; e.preventDefault(); }
     if (k === "x") { removeNearbyOwn(); e.preventDefault(); }
     if (k === "e") { toggleRide(); e.preventDefault(); }
+    if (k === "r") { B.rot = (B.rot + 1) % 4; bToast("Rotation: " + (B.rot * 90) + "°"); updateRotLabel(); e.preventDefault(); }
     if (k === "escape") { closeBuilder(); }
   }
+  function updateRotLabel() { const el = document.getElementById("bld-rot"); if (el) el.textContent = "↻ " + (B.rot * 90) + "°"; }
   function builderKeyUp(e) {
     if (!B.on) return;
     const k = e.key.toLowerCase();
@@ -6248,19 +6338,28 @@ try {
   function placeAt(x, y, key) {
     const c = catInfo(key); if (!c) return;
     if (bWallet() < c.price) { bToast("Not enough money! Battle wild Pokemon to earn $."); return; }
-    // footprint overlap check for large buildings (client-side, before sending)
-    const fp = FOOTPRINT[key] || { w: 1, h: 1 };
-    for (let dy = 0; dy < fp.h; dy++) for (let dx = 0; dx < fp.w; dx++) {
-      const tx = x + dx, ty = y + dy;
-      if (isWildTree(tx, ty)) { bToast("Can't build on a tree."); return; }
+    const fp = FOOTPRINT[key];
+    if (fp) {
+      // big prefab: whole footprint must be clear of trees & other prefabs/walls
+      for (let dy = 0; dy < fp.h; dy++) for (let dx = 0; dx < fp.w; dx++) {
+        const tx = x + dx, ty = y + dy;
+        if (isWildTree(tx, ty)) { bToast("Can't build on a tree."); return; }
+        for (const o of B.objects.values()) {
+          if (FOOTPRINT[o.type]) { if (inFootprint(o, tx, ty)) { bToast("That spot is occupied."); return; } }
+          else if (o.x === tx && o.y === ty && SOLID[o.type]) { bToast("That spot is occupied."); return; }
+        }
+      }
+    } else {
+      // ARK-style modular part: only block the SAME part with SAME rotation on this tile
+      if (isWildTree(x, y) && key !== "tree") { bToast("Can't build on a tree."); return; }
       for (const o of B.objects.values()) {
-        if (FOOTPRINT[o.type]) { if (inFootprint(o, tx, ty)) { bToast("That spot is occupied."); return; } }
-        else if (o.x === tx && o.y === ty && o.type !== "land" && o.type !== "flower") { bToast("That spot is occupied."); return; }
+        if (FOOTPRINT[o.type] && inFootprint(o, x, y)) { bToast("That spot is occupied by a building."); return; }
+        if (o.x === x && o.y === y && o.type === key && (o.rot || 0) === B.rot) { bToast("That part is already here."); return; }
       }
     }
     bWalletSet(bWallet() - c.price); refreshBWallet();
     B._pendingCost = (B._pendingCost || 0) + c.price;
-    sendMsg("builder_place", { objType: key, x, y });
+    sendMsg("builder_place", { objType: key, x, y, rot: (c.rotatable ? B.rot : 0) });
   }
   function removeNearbyOwn() {
     const px = Math.round(B.player.x), py = Math.round(B.player.y);
@@ -6419,8 +6518,17 @@ try {
       B.cam.y = B.player.py - BVIEW_H / 2 + BT / 2;
       drawBuilder();
       sendBuilderPos();
+      // live coordinates bar
+      const co = document.getElementById("bld-coords");
+      if (co) co.textContent = "X:" + Math.round(B.player.x) + "  Y:" + Math.round(B.player.y);
     }
     B.raf = requestAnimationFrame(builderLoop);
+  }
+
+  // Push wallet + inventory + position to the server profile (persisted per player).
+  function saveBuilderProgress(silent) {
+    sendMsg("builder_save_profile", { wallet: bWallet(), inventory: (window.G && window.G.bag) || {} });
+    if (!silent) bToast("Progress saved to server!");
   }
   function sendBuilderPos() {
     const now = Date.now();
@@ -6491,10 +6599,11 @@ try {
       return;
     }
     if (o.type === "flower") { drawFlowerbed(ctx, sx, sy); return; }
-    if (o.type === "fence") { drawFence(ctx, sx, sy); return; }
     if (o.type === "lamp") { drawLamp(ctx, sx, sy); return; }
     if (o.type === "tree") { if (window.drawTile && window.T) window.drawTile(ctx, window.T.TREE, sx, sy, o.x, o.y, B.frame); return; }
     if (VEHICLES[o.type]) { drawVehicle(ctx, sx, sy, o.type, col); return; }
+    // ---- ARK-style modular parts (rotatable) ----
+    if (drawPart(ctx, o, sx, sy)) return;
     drawBuilding(ctx, sx, sy, o.type, col);
     if (o.ownerName) {
       ctx.font = "5px 'Press Start 2P',monospace"; ctx.textAlign = "center";
@@ -6518,17 +6627,17 @@ try {
     });
   }
   // ---- wooden fence (posts + rails) ----
-  function drawFence(ctx, sx, sy) {
-    px(ctx, sx, sy + 5, BT, 2, "#8a5a2a");                       // top rail (shadow)
-    px(ctx, sx, sy + 4, BT, 1, "#caa46a");                       // top rail (light)
-    px(ctx, sx, sy + 10, BT, 2, "#8a5a2a");                      // bottom rail
-    px(ctx, sx, sy + 9, BT, 1, "#caa46a");
-    // posts
-    [2, BT - 5].forEach((pxn) => {
-      px(ctx, sx + pxn, sy + 2, 3, BT - 4, "#9c6b34");
-      px(ctx, sx + pxn, sy + 2, 1, BT - 4, "#caa46a");
-      px(ctx, sx + pxn, sy + 2, 3, 1, "#caa46a");
-    });
+  function drawFence(ctx, sx, sy, horizontal) {
+    if (horizontal === undefined) horizontal = true;
+    if (horizontal) {
+      px(ctx, sx, sy + 5, BT, 2, "#8a5a2a"); px(ctx, sx, sy + 4, BT, 1, "#caa46a");
+      px(ctx, sx, sy + 10, BT, 2, "#8a5a2a"); px(ctx, sx, sy + 9, BT, 1, "#caa46a");
+      [2, BT - 5].forEach((pxn) => { px(ctx, sx + pxn, sy + 2, 3, BT - 4, "#9c6b34"); px(ctx, sx + pxn, sy + 2, 1, BT - 4, "#caa46a"); px(ctx, sx + pxn, sy + 2, 3, 1, "#caa46a"); });
+    } else {
+      px(ctx, sx + 5, sy, 2, BT, "#8a5a2a"); px(ctx, sx + 4, sy, 1, BT, "#caa46a");
+      px(ctx, sx + 10, sy, 2, BT, "#8a5a2a"); px(ctx, sx + 9, sy, 1, BT, "#caa46a");
+      [2, BT - 5].forEach((pyn) => { px(ctx, sx + 2, sy + pyn, BT - 4, 3, "#9c6b34"); px(ctx, sx + 2, sy + pyn, BT - 4, 1, "#caa46a"); });
+    }
   }
   // ---- lamp post (matches the reference's lamp) ----
   function drawLamp(ctx, sx, sy) {
@@ -6537,6 +6646,87 @@ try {
     px(ctx, sx + BT / 2 - 3, sy + 1, 6, 4, "#3a4048");           // lamp housing
     px(ctx, sx + BT / 2 - 2, sy + 2, 4, 2, "#ffe98a");           // glowing glass
     px(ctx, sx + BT / 2 - 4, sy + BT - 2, 8, 2, "#444c56");       // base
+  }
+
+  // Draw an ARK-style modular part. Returns true if it handled the type.
+  function drawPart(ctx, o, sx, sy) {
+    const t = o.type, rot = o.rot || 0;
+    const horizontal = (rot === 1 || rot === 3); // 90/270 = horizontal orientation
+    switch (t) {
+      case "foundation": {
+        px(ctx, sx, sy, BT, BT, "#8a7660"); px(ctx, sx + 1, sy + 1, BT - 2, BT - 2, "#7d6b55");
+        ctx.strokeStyle = "#5e5040"; ctx.strokeRect(sx + 1.5, sy + 1.5, BT - 3, BT - 3);
+        px(ctx, sx + 2, sy + 2, 3, 3, "#9a8870"); return true;
+      }
+      case "floor_wood": {
+        px(ctx, sx, sy, BT, BT, "#caa46a");
+        ctx.fillStyle = "#a9824a"; for (let i = 0; i <= BT; i += 4) ctx.fillRect(sx, sy + i, BT, 1);
+        ctx.fillStyle = "#e0c089"; ctx.fillRect(sx, sy + 1, BT, 1); return true;
+      }
+      case "floor_stone": {
+        px(ctx, sx, sy, BT, BT, "#9aa0a6");
+        ctx.fillStyle = "#7d848b"; ctx.fillRect(sx, sy + 8, BT, 1); ctx.fillRect(sx + 8, sy, 1, BT);
+        ctx.fillStyle = "#b3b9bf"; ctx.fillRect(sx + 1, sy + 1, 6, 6); ctx.fillRect(sx + 9, sy + 9, 6, 6); return true;
+      }
+      case "fence": { drawFence(ctx, sx, sy, horizontal); return true; }
+      case "pillar": {
+        px(ctx, sx + 5, sy, 6, BT, "#9aa0a6"); px(ctx, sx + 5, sy, 2, BT, "#b8bec4");
+        px(ctx, sx + 4, sy, 8, 2, "#7d848b"); px(ctx, sx + 4, sy + BT - 2, 8, 2, "#7d848b"); return true;
+      }
+      case "wall_wood": case "wall_stone": {
+        const wood = (t === "wall_wood");
+        // a wall slab oriented along the tile edge per rotation
+        const base = wood ? "#b07a3c" : "#8b9097", lite = wood ? "#caa46a" : "#aab0b6", dark = wood ? "#8a5a2a" : "#6f757b";
+        if (horizontal) {
+          px(ctx, sx, sy + 5, BT, 6, base); px(ctx, sx, sy + 5, BT, 1, lite); px(ctx, sx, sy + 10, BT, 1, dark);
+          if (wood) for (let i = 2; i < BT; i += 4) px(ctx, sx + i, sy + 5, 1, 6, dark);
+        } else {
+          px(ctx, sx + 5, sy, 6, BT, base); px(ctx, sx + 5, sy, 1, BT, lite); px(ctx, sx + 10, sy, 1, BT, dark);
+          if (wood) for (let i = 2; i < BT; i += 4) px(ctx, sx + 5, sy + i, 6, 1, dark);
+        }
+        return true;
+      }
+      case "window": {
+        const base = "#b07a3c", lite = "#caa46a";
+        if (horizontal) { px(ctx, sx, sy + 5, BT, 6, base); px(ctx, sx + 4, sy + 6, 8, 4, "#bfe9ff"); px(ctx, sx + 7, sy + 6, 1, 4, base); }
+        else { px(ctx, sx + 5, sy, 6, BT, base); px(ctx, sx + 6, sy + 4, 4, 8, "#bfe9ff"); px(ctx, sx + 6, sy + 7, 4, 1, base); }
+        return true;
+      }
+      case "doorway": case "gate": {
+        const base = (t === "gate") ? "#9c6b34" : "#b07a3c", lite = "#caa46a";
+        // posts with an opening you can walk through
+        if (horizontal) { px(ctx, sx, sy + 4, 3, 8, base); px(ctx, sx + BT - 3, sy + 4, 3, 8, base); px(ctx, sx, sy + 3, BT, 2, base); }
+        else { px(ctx, sx + 3, sy, 3, BT, base); px(ctx, sx + BT - 6, sy, 3, BT, base); px(ctx, sx + 3, sy, BT - 6, 2, base); }
+        px(ctx, sx + 3, sy, 1, 1, lite); return true;
+      }
+      case "roof": {
+        // a sloped shingled roof panel
+        px(ctx, sx, sy, BT, BT, "#b5532f");
+        ctx.fillStyle = "#8f3d22"; for (let i = 2; i < BT; i += 3) ctx.fillRect(sx, sy + i, BT, 1);
+        px(ctx, sx, sy, BT, 2, "#d27a4a"); return true;
+      }
+      case "stairs": {
+        px(ctx, sx, sy, BT, BT, "#a98c5a");
+        ctx.fillStyle = "#8a6e40";
+        for (let i = 0; i < 4; i++) ctx.fillRect(sx + i * 4, sy + i * 4, BT - i * 4, 3);
+        return true;
+      }
+      case "storage": {
+        px(ctx, sx + 2, sy + 4, BT - 4, BT - 6, "#8a5a2a"); px(ctx, sx + 2, sy + 4, BT - 4, 2, "#a9743a");
+        px(ctx, sx + 2, sy + 8, BT - 4, 1, "#5a3a18"); px(ctx, sx + BT / 2 - 1, sy + 6, 2, 2, "#FFD700"); return true;
+      }
+      case "campfire": {
+        px(ctx, sx + 3, sy + BT - 5, BT - 6, 3, "#5a3a18"); // logs
+        const f = (Math.floor(B.frame / 6) % 2);
+        px(ctx, sx + 6, sy + 5 + f, 4, 6 - f, "#ff7a1a"); px(ctx, sx + 7, sy + 7, 2, 4, "#ffd23f"); return true;
+      }
+      case "sign": {
+        px(ctx, sx + BT / 2 - 1, sy + 7, 2, BT - 7, "#7a4a28");
+        px(ctx, sx + 3, sy + 2, BT - 6, 6, "#caa46a"); px(ctx, sx + 3, sy + 2, BT - 6, 1, "#e0c089");
+        ctx.fillStyle = "#5a3a18"; ctx.fillRect(sx + 5, sy + 4, BT - 10, 1); ctx.fillRect(sx + 5, sy + 6, BT - 12, 1); return true;
+      }
+    }
+    return false;
   }
 
   function drawBuilding(ctx, sx, sy, type, col) {
@@ -6661,7 +6851,26 @@ try {
     switch (msg.type) {
       case "builder_init":
         B.me = msg.you; B.objects.clear(); (msg.objects || []).forEach((o) => B.objects.set(o.id, o));
-        B.peers.clear(); (msg.peers || []).forEach((p) => B.peers.set(p.id, mkPeer(p))); return true;
+        B.peers.clear(); (msg.peers || []).forEach((p) => B.peers.set(p.id, mkPeer(p)));
+        // apply this player's saved server profile (wallet/inventory/position)
+        if (msg.profile) {
+          B.profileName = msg.profile.name || null;
+          if (typeof msg.profile.wallet === "number") { bWalletSet(msg.profile.wallet); refreshBWallet(); }
+          if (msg.profile.inventory && window.G) window.G.bag = Object.assign({}, msg.profile.inventory);
+          const pp = msg.profile.pos || { x: 0, y: 0 };
+          const sx = pp.x | 0, sy = pp.y | 0;
+          B.player = { x: sx, y: sy, px: sx * BT, py: sy * BT, dir: "down", moving: false, vehicle: null, tx: sx, ty: sy, t: 1, fx: sx, fy: sy };
+          bToast("Welcome back, " + (B.profileName || "Builder") + "!");
+        }
+        return true;
+      case "builder_denied":
+        // wrong PIN — kick back to login
+        B.on = false;
+        if (B._autoSave) { clearInterval(B._autoSave); B._autoSave = null; }
+        document.getElementById("mp-builder").classList.remove("show");
+        showBuilderLogin();
+        document.getElementById("bld-login-err").textContent = msg.message || "Access denied.";
+        return true;
       case "builder_peer_join":
         if (msg.id !== B.me) B.peers.set(msg.id, mkPeer({ id: msg.id, name: msg.name, x: 0, y: 0, dir: "down" })); return true;
       case "builder_peer_left": B.peers.delete(msg.id); return true;

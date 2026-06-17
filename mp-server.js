@@ -19,11 +19,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
    - everyone spawns at the same point and sees each other live.
    ============================================================ */
 const BUILDER_FILE = path.join(__dirname, "builder-world.json");
+const PROFILE_FILE = path.join(__dirname, "builder-profiles.json");
 const builder = {
-  clients: new Map(),       // playerId -> { ws, name, pos:{x,y,dir,moving,vehicle} }
+  clients: new Map(),       // playerId -> { ws, name, pos:{x,y,dir,moving,vehicle}, profileKey }
   objects: [],              // placed objects
   nextObjId: 1,
 };
+// Per-player profiles saved on the server: key = lowercase name -> { name, pin, wallet, pos, inventory }
+const profiles = new Map();
 function loadBuilder() {
   try {
     const raw = fs.readFileSync(BUILDER_FILE, "utf8");
@@ -31,6 +34,12 @@ function loadBuilder() {
     builder.objects = Array.isArray(data.objects) ? data.objects : [];
     builder.nextObjId = data.nextObjId || (builder.objects.reduce((m, o) => Math.max(m, o.id), 0) + 1);
     console.log("Builder world loaded:", builder.objects.length, "objects");
+  } catch { /* no file yet */ }
+  try {
+    const raw = fs.readFileSync(PROFILE_FILE, "utf8");
+    const data = JSON.parse(raw);
+    Object.entries(data).forEach(([k, v]) => profiles.set(k, v));
+    console.log("Builder profiles loaded:", profiles.size);
   } catch { /* no file yet */ }
 }
 let _saveTimer = null;
@@ -41,6 +50,17 @@ function saveBuilderSoon() {
     try {
       fs.writeFileSync(BUILDER_FILE, JSON.stringify({ objects: builder.objects, nextObjId: builder.nextObjId }));
     } catch (e) { console.warn("Builder save failed:", e.message); }
+  }, 1200);
+}
+let _profTimer = null;
+function saveProfilesSoon() {
+  if (_profTimer) return;
+  _profTimer = setTimeout(() => {
+    _profTimer = null;
+    try {
+      const obj = {}; for (const [k, v] of profiles) obj[k] = v;
+      fs.writeFileSync(PROFILE_FILE, JSON.stringify(obj));
+    } catch (e) { console.warn("Profile save failed:", e.message); }
   }, 1200);
 }
 loadBuilder();
@@ -217,13 +237,33 @@ wss.on("connection", (ws) => {
     // ---------- BUILDER MODE (global shared world) ----------
     if (type === "builder_join") {
       const name = clean(msg.name, 16) || "Builder";
-      builder.clients.set(ws.playerId, { ws, name, pos: { x: 0, y: 0, dir: "down", moving: false, vehicle: null } });
+      const pin = clean(msg.pin, 8);
+      const key = name.toLowerCase();
+      // Load or create the server-side profile (name+PIN).
+      let prof = profiles.get(key);
+      if (prof) {
+        // existing profile -> verify PIN
+        if ((prof.pin || "") !== pin) {
+          send(ws, "builder_denied", { message: "Wrong PIN for that name. Pick another name or correct the PIN." });
+          return;
+        }
+      } else {
+        prof = { name, pin, wallet: 0, inventory: {}, pos: { x: 0, y: 0 } };
+        profiles.set(key, prof);
+        saveProfilesSoon();
+      }
+      const client = { ws, name, profileKey: key, pos: { x: prof.pos.x || 0, y: prof.pos.y || 0, dir: "down", moving: false, vehicle: null } };
+      builder.clients.set(ws.playerId, client);
       ws.inBuilder = true;
-      // send full world snapshot + current peers
+      ws.builderProfileKey = key;
+      // send full world snapshot + current peers + this player's saved progress
       const peers = [...builder.clients.entries()]
         .filter(([pid]) => pid !== ws.playerId)
         .map(([pid, c]) => ({ id: pid, name: c.name, ...c.pos }));
-      send(ws, "builder_init", { you: ws.playerId, objects: builder.objects, peers });
+      send(ws, "builder_init", {
+        you: ws.playerId, objects: builder.objects, peers,
+        profile: { name: prof.name, wallet: prof.wallet || 0, inventory: prof.inventory || {}, pos: prof.pos || { x: 0, y: 0 } },
+      });
       builderBroadcast("builder_peer_join", { id: ws.playerId, name }, ws.playerId);
       return;
     }
@@ -244,6 +284,22 @@ wss.on("connection", (ws) => {
         moving: !!msg.moving, vehicle: msg.vehicle ? clean(msg.vehicle, 16) : null,
       };
       builderBroadcast("builder_peer_pos", { id: ws.playerId, name: c.name, ...c.pos }, ws.playerId);
+      // also persist position to the profile (debounced)
+      const prof = profiles.get(ws.builderProfileKey);
+      if (prof) { prof.pos = { x: c.pos.x, y: c.pos.y }; saveProfilesSoon(); }
+      return;
+    }
+    if (type === "builder_save_profile") {
+      // client pushes its wallet + inventory to the server profile
+      const prof = profiles.get(ws.builderProfileKey);
+      if (!prof) return;
+      if (typeof msg.wallet === "number" && isFinite(msg.wallet)) prof.wallet = Math.max(0, Math.floor(msg.wallet));
+      if (msg.inventory && typeof msg.inventory === "object") {
+        const inv = {};
+        for (const [k, v] of Object.entries(msg.inventory)) { const n = Math.max(0, Math.floor(Number(v) || 0)); if (n > 0) inv[clean(k, 24)] = n; }
+        prof.inventory = inv;
+      }
+      saveProfilesSoon();
       return;
     }
     if (type === "builder_place") {
@@ -255,11 +311,15 @@ wss.on("connection", (ws) => {
         type: clean(msg.objType, 24),
         x: Math.round(Number(msg.x) || 0),
         y: Math.round(Number(msg.y) || 0),
+        rot: [0, 1, 2, 3].includes(msg.rot) ? msg.rot : 0,
       };
       if (!obj.type) return;
-      // prevent exact-overlap stacking on the same tile for land/buildings
-      const occupied = builder.objects.some((o) => o.x === obj.x && o.y === obj.y && o.type === obj.type);
-      if (occupied) { send(ws, "builder_error", { message: "That spot is already taken." }); return; }
+      // Prevent placing the SAME part with the SAME rotation on the SAME tile
+      // (ARK-style layering of different parts on a tile is allowed).
+      const dup = builder.objects.some((o) => o.x === obj.x && o.y === obj.y && o.type === obj.type && (o.rot || 0) === obj.rot);
+      if (dup) { send(ws, "builder_error", { message: "That part is already there." }); return; }
+      // safety cap so the world file can't grow unbounded
+      if (builder.objects.length >= 50000) { send(ws, "builder_error", { message: "World build limit reached." }); return; }
       builder.objects.push(obj);
       saveBuilderSoon();
       builderBroadcast("builder_placed", { obj });
