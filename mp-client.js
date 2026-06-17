@@ -272,17 +272,28 @@
   }
 
   function injectTitleButton() {
-    const menu = document.getElementById("title-menu");
-    if (!menu) return;
-    const btn = document.createElement("button");
-    btn.className = "title-btn alt";
-    btn.id = "btn-mp-journey";
-    btn.textContent = "MULTIPLAYER JOURNEY";
-    // place it right after NEW JOURNEY for visibility
-    const after = document.getElementById("btn-new-journey");
-    if (after && after.nextSibling) menu.insertBefore(btn, after.nextSibling);
-    else menu.appendChild(btn);
-    btn.addEventListener("click", openOverlay);
+    // Robust: retry until the title menu exists, never double-insert, and give the
+    // button a distinct look + clear position so it's always visible.
+    let tries = 0;
+    const tryInsert = () => {
+      const menu = document.getElementById("title-menu");
+      if (!menu) { if (tries++ < 100) setTimeout(tryInsert, 100); return; }
+      if (document.getElementById("btn-mp-journey")) return; // already there
+      const btn = document.createElement("button");
+      btn.className = "title-btn alt";
+      btn.id = "btn-mp-journey";
+      btn.textContent = "🌐 MULTIPLAYER";
+      // distinct, eye-catching style so it stands out from the other buttons
+      btn.style.background = "linear-gradient(135deg,#7C4DFF,#4fc3f7)";
+      btn.style.color = "#fff";
+      btn.style.boxShadow = "0 4px 0 #4527a0";
+      // place it directly after NEW JOURNEY (skip whitespace text nodes)
+      const after = document.getElementById("btn-new-journey");
+      if (after) after.insertAdjacentElement("afterend", btn);
+      else menu.appendChild(btn);
+      btn.addEventListener("click", openOverlay);
+    };
+    tryInsert();
   }
 
   function openOverlay() {

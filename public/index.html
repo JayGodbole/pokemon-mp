@@ -285,6 +285,7 @@
           <button class="title-btn" id="btn-journey">CONTINUE JOURNEY</button>
           <button class="title-btn" id="btn-new-journey">NEW JOURNEY</button>
           <button class="title-btn alt" id="btn-load-file">LOAD SAVE FILE</button>
+          <button class="title-btn alt" id="btn-customize">CUSTOMIZE</button>
           <button class="title-btn alt" id="btn-battle">POKEMON BATTLE</button>
           <input type="file" id="save-file-input" accept=".json" style="display:none;">
         </div>
@@ -1003,6 +1004,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('btn-journey').addEventListener('click',onContinueJourney);
   document.getElementById('btn-new-journey').addEventListener('click',openPartnerSelect);
   document.getElementById('btn-load-file').addEventListener('click',()=>document.getElementById('save-file-input').click());
+  document.getElementById('btn-customize').addEventListener('click',openCustomizeShop);
   document.getElementById('save-file-input').addEventListener('change',onLoadFile);
   document.getElementById('btn-battle').addEventListener('click',openBattleSelect);
   document.getElementById('start-battle-btn').addEventListener('click',beginBattle2P);
@@ -1171,6 +1173,7 @@ function beginJourney(){
   G.partner=battleCopy(POKEMON_ROSTER[G.partnerRoster]);
   G.party=[G.partner]; G.partnerIdx=0; G._trainerParty=[]; G._trainerPartyIdx=0; G._defeatedOpponentLevels=[];
   G.bag={potion:3,superPotion:1,hyperPotion:1,xAttack:1,pokeball:5,greatball:2,ultraball:1}; G.money=3000;
+  applyWardrobe();   // apply the player's customized look to their overworld sprite
   enterWorld();
 }
 
@@ -2001,6 +2004,7 @@ function endBattle(winner){
         moneyGained = Math.floor((G.p2.level || 50) * 5);  // Less from wild pokemon
       }
       G.money = (G.money || 0) + moneyGained;
+      bankWardrobeMoney(moneyGained);  // accrue winnings into the persistent customization wallet
       
       if(G._trainerNPC){ G._trainerWin=G._trainerNPC; G._trainerNPC.defeated=true; G._trainerNPC=null; }
       enterWorld();
@@ -4163,6 +4167,269 @@ function cheatAdd(){
 /* ============================================================
    SAVE / LOAD SYSTEM
    ============================================================ */
+
+/* ============================================================
+   CHARACTER CUSTOMIZATION  (title-menu "CUSTOMIZE")
+   - Persistent wallet funded by money won across games.
+   - Buy & equip hats, hair colors, outfit colors, skin tones.
+   - Equipped look is applied to CHAR_CFGS.player so the overworld
+     trainer reflects the player's choices.
+   ============================================================ */
+const WARDROBE_WALLET_KEY = 'pokemon_dino_wallet';
+const WARDROBE_KEY = 'pokemon_dino_wardrobe';
+
+function walletGet(){ try { return Math.max(0, Math.floor(Number(localStorage.getItem(WARDROBE_WALLET_KEY))||0)); } catch(e){ return 0; } }
+function walletSet(v){ try { localStorage.setItem(WARDROBE_WALLET_KEY, String(Math.max(0,Math.floor(v)))); } catch(e){} }
+function bankWardrobeMoney(amount){ amount=Math.floor(amount||0); if(amount>0) walletSet(walletGet()+amount); refreshWalletLabel(); }
+
+function wardrobeGet(){
+  try {
+    const w = JSON.parse(localStorage.getItem(WARDROBE_KEY)||'{}');
+    return Object.assign({ owned:{}, equipped:{} }, w);
+  } catch(e){ return { owned:{}, equipped:{} }; }
+}
+function wardrobeSet(w){ try { localStorage.setItem(WARDROBE_KEY, JSON.stringify(w)); } catch(e){} }
+
+/* Catalog. Each option mutates the player CHAR_CFG fields.
+   'free' items are owned by default (price 0). */
+const WARDROBE_CATALOG = {
+  hat: {
+    label: 'HAT / HAIR',
+    options: [
+      { id:'cap_red',   name:'Red Cap',     price:0,    apply:{ cap:'#d83838', capFront:'#f4f4f4', emblem:'#3b6cc4', hair:null } },
+      { id:'cap_blue',  name:'Blue Cap',    price:300,  apply:{ cap:'#2f6cc4', capFront:'#f4f4f4', emblem:'#d83838', hair:null } },
+      { id:'cap_black', name:'Black Cap',   price:400,  apply:{ cap:'#222',    capFront:'#444',    emblem:'#FFD700', hair:null } },
+      { id:'cap_gold',  name:'Gold Cap',    price:1200, apply:{ cap:'#FFD700', capFront:'#fff6c0', emblem:'#8B0000', hair:null } },
+      { id:'no_hat_brown', name:'Brown Hair (no hat)', price:200, apply:{ cap:null, capFront:null, emblem:null, hair:'#3a2a18' } },
+      { id:'no_hat_blonde',name:'Blonde Hair (no hat)',price:500, apply:{ cap:null, capFront:null, emblem:null, hair:'#e6c34d' } },
+      { id:'no_hat_pink',  name:'Pink Hair (no hat)',  price:900, apply:{ cap:null, capFront:null, emblem:null, hair:'#ff7bac' } },
+    ]
+  },
+  outfit: {
+    label: 'OUTFIT',
+    options: [
+      { id:'out_red',    name:'Red Jacket',    price:0,    apply:{ top:'#d83838', top2:'#f4f4f4' } },
+      { id:'out_green',  name:'Green Jacket',  price:300,  apply:{ top:'#3aa83a', top2:'#ffe066' } },
+      { id:'out_purple', name:'Purple Coat',   price:600,  apply:{ top:'#7a4fbf', top2:'#d9c2ff' } },
+      { id:'out_black',  name:'Black Suit',    price:800,  apply:{ top:'#222',    top2:'#888' } },
+      { id:'out_gold',   name:'Champion Gold', price:2000, apply:{ top:'#8B0000', top2:'#FFD700' } },
+    ]
+  },
+  pants: {
+    label: 'PANTS',
+    options: [
+      { id:'pants_blue',  name:'Blue Jeans',  price:0,   apply:{ pants:'#2f4a8a', pantsD:'#21366a' } },
+      { id:'pants_black', name:'Black Pants', price:250, apply:{ pants:'#2a2a2a', pantsD:'#161616' } },
+      { id:'pants_khaki', name:'Khaki Pants', price:350, apply:{ pants:'#b89b5a', pantsD:'#8f7740' } },
+      { id:'pants_white', name:'White Pants', price:500, apply:{ pants:'#ececec', pantsD:'#c4c4c4' } },
+    ]
+  },
+  skin: {
+    label: 'SKIN TONE',
+    options: [
+      { id:'skin_light', name:'Light',  price:0, apply:{ skin:'#f4c896', skinD:'#d49a5a', arm:'#f4c896' } },
+      { id:'skin_tan',   name:'Tan',    price:0, apply:{ skin:'#e0a878', skinD:'#bd8456', arm:'#e0a878' } },
+      { id:'skin_brown', name:'Brown',  price:0, apply:{ skin:'#b8784a', skinD:'#966038', arm:'#b8784a' } },
+      { id:'skin_deep',  name:'Deep',   price:0, apply:{ skin:'#8a5a36', skinD:'#6e4528', arm:'#8a5a36' } },
+    ]
+  },
+  shoe: {
+    label: 'SHOES',
+    options: [
+      { id:'shoe_white', name:'White Shoes', price:0,   apply:{ shoe:'#ececec', shoeD:'#c4c4c4' } },
+      { id:'shoe_red',   name:'Red Shoes',   price:200, apply:{ shoe:'#d83838', shoeD:'#a82020' } },
+      { id:'shoe_black', name:'Black Boots', price:300, apply:{ shoe:'#222',    shoeD:'#111' } },
+      { id:'shoe_gold',  name:'Gold Kicks',  price:1500,apply:{ shoe:'#FFD700', shoeD:'#c9a400' } },
+    ]
+  },
+};
+
+// Defaults: the free option in each category is owned & equipped initially.
+function ensureWardrobeDefaults(){
+  const w = wardrobeGet();
+  Object.keys(WARDROBE_CATALOG).forEach(cat=>{
+    const free = WARDROBE_CATALOG[cat].options.find(o=>o.price===0);
+    w.owned[cat] = w.owned[cat] || {};
+    WARDROBE_CATALOG[cat].options.forEach(o=>{ if(o.price===0) w.owned[cat][o.id]=true; });
+    if(!w.equipped[cat]) w.equipped[cat] = free ? free.id : WARDROBE_CATALOG[cat].options[0].id;
+  });
+  wardrobeSet(w);
+  return w;
+}
+
+// Apply the equipped wardrobe onto CHAR_CFGS.player and clear the sprite cache.
+function applyWardrobe(){
+  const w = ensureWardrobeDefaults();
+  const base = CHAR_CFGS.player;
+  Object.keys(WARDROBE_CATALOG).forEach(cat=>{
+    const id = w.equipped[cat];
+    const opt = WARDROBE_CATALOG[cat].options.find(o=>o.id===id);
+    if(opt) Object.assign(base, opt.apply);
+  });
+  _charCache = {}; // force re-render with new look
+}
+
+/* ---------------- Shop overlay (built on first open) ---------------- */
+let _shopState = { cat:'hat' };
+function buildShopDOM(){
+  if(document.getElementById('wardrobe-overlay')) return;
+  const style = document.createElement('style');
+  style.textContent = `
+    #wardrobe-overlay{position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:10060;display:none;
+      align-items:center;justify-content:center;font-family:'Press Start 2P',monospace;padding:14px;}
+    #wardrobe-overlay.show{display:flex;}
+    #wd-box{background:#16213e;border:3px solid #FFD700;border-radius:12px;width:560px;max-width:96vw;max-height:92vh;
+      overflow:auto;padding:16px;color:#fff;box-shadow:0 12px 40px rgba(0,0,0,.6);}
+    #wd-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
+    #wd-top h2{color:#FFD700;font-size:13px;}
+    #wd-wallet{color:#7CFC9A;font-size:10px;}
+    #wd-main{display:flex;gap:14px;flex-wrap:wrap;}
+    #wd-preview{flex:0 0 150px;background:#0f1830;border:2px solid #0f3460;border-radius:10px;
+      display:flex;flex-direction:column;align-items:center;justify-content:center;padding:12px;gap:10px;}
+    #wd-preview canvas{width:96px;height:120px;image-rendering:pixelated;}
+    #wd-preview .dirs{display:flex;gap:6px;}
+    #wd-preview .dirs button{background:#2b3350;border:none;color:#fff;border-radius:5px;padding:5px 7px;
+      font-family:'Press Start 2P',monospace;font-size:7px;cursor:pointer;}
+    #wd-right{flex:1;min-width:230px;}
+    #wd-cats{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px;}
+    #wd-cats button{background:#2b3350;border:none;color:#cfe;border-radius:6px;padding:7px 8px;
+      font-family:'Press Start 2P',monospace;font-size:7px;cursor:pointer;}
+    #wd-cats button.active{background:#FFD700;color:#111;}
+    #wd-options{display:flex;flex-direction:column;gap:6px;max-height:40vh;overflow-y:auto;}
+    .wd-opt{display:flex;justify-content:space-between;align-items:center;background:#2b3350;border:2px solid transparent;
+      border-radius:8px;padding:9px;font-size:8px;}
+    .wd-opt.equipped{border-color:#7CFC9A;}
+    .wd-opt .wd-name{flex:1;}
+    .wd-opt button{border:none;border-radius:6px;padding:7px 9px;font-family:'Press Start 2P',monospace;
+      font-size:7px;cursor:pointer;}
+    .wd-buy{background:#FFD700;color:#111;}
+    .wd-equip{background:#4fc3f7;color:#062a3a;}
+    .wd-equipped-tag{background:#7CFC9A;color:#06351a;border-radius:6px;padding:7px 9px;font-size:7px;}
+    .wd-locked{opacity:.55;}
+    #wd-close{background:#8B0000;color:#fff;border:none;border-radius:8px;padding:10px 16px;
+      font-family:'Press Start 2P',monospace;font-size:9px;cursor:pointer;margin-top:12px;width:100%;}
+    #wd-toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#8B0000;color:#fff;
+      padding:9px 16px;border-radius:8px;font-family:'Press Start 2P',monospace;font-size:8px;z-index:10070;display:none;}
+  `;
+  document.head.appendChild(style);
+
+  const ov = document.createElement('div');
+  ov.id = 'wardrobe-overlay';
+  ov.innerHTML = `
+    <div id="wd-box">
+      <div id="wd-top">
+        <h2>CUSTOMIZE TRAINER</h2>
+        <div id="wd-wallet">$0</div>
+      </div>
+      <div id="wd-main">
+        <div id="wd-preview">
+          <canvas id="wd-canvas" width="16" height="20"></canvas>
+          <div class="dirs">
+            <button data-dir="down">↓</button>
+            <button data-dir="left">←</button>
+            <button data-dir="right">→</button>
+            <button data-dir="up">↑</button>
+          </div>
+        </div>
+        <div id="wd-right">
+          <div id="wd-cats"></div>
+          <div id="wd-options"></div>
+        </div>
+      </div>
+      <button id="wd-close">DONE</button>
+      <div id="wd-toast"></div>
+    </div>`;
+  document.body.appendChild(ov);
+
+  // category tabs
+  const cats = document.getElementById('wd-cats');
+  Object.keys(WARDROBE_CATALOG).forEach(cat=>{
+    const b = document.createElement('button');
+    b.textContent = WARDROBE_CATALOG[cat].label;
+    b.dataset.cat = cat;
+    b.onclick = ()=>{ _shopState.cat = cat; renderShop(); };
+    cats.appendChild(b);
+  });
+
+  ov.querySelectorAll('#wd-preview .dirs button').forEach(b=>{
+    b.onclick = ()=>{ _shopState.dir = b.dataset.dir; renderPreview(); };
+  });
+  document.getElementById('wd-close').onclick = closeCustomizeShop;
+  ov.addEventListener('click', e=>{ if(e.target===ov) closeCustomizeShop(); });
+}
+
+function wdToast(msg){
+  const t=document.getElementById('wd-toast'); if(!t) return;
+  t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(()=>t.style.display='none',2200);
+}
+function refreshWalletLabel(){ const el=document.getElementById('wd-wallet'); if(el) el.textContent='$'+walletGet(); }
+
+function renderPreview(){
+  const dir=_shopState.dir||'down';
+  // build a temp config from current equipped selections
+  ensureWardrobeDefaults();
+  applyWardrobe();
+  const cv=document.getElementById('wd-canvas'); if(!cv) return;
+  const ctx=cv.getContext('2d'); ctx.imageSmoothingEnabled=false; ctx.clearRect(0,0,16,20);
+  drawChar(ctx, CHAR_CFGS.player, dir, 0);
+}
+
+function renderShop(){
+  ensureWardrobeDefaults();
+  refreshWalletLabel();
+  // highlight active tab
+  document.querySelectorAll('#wd-cats button').forEach(b=>b.classList.toggle('active', b.dataset.cat===_shopState.cat));
+  const w = wardrobeGet();
+  const cat = _shopState.cat;
+  const wrap = document.getElementById('wd-options');
+  wrap.innerHTML='';
+  WARDROBE_CATALOG[cat].options.forEach(opt=>{
+    const owned = !!(w.owned[cat] && w.owned[cat][opt.id]) || opt.price===0;
+    const equipped = w.equipped[cat]===opt.id;
+    const row=document.createElement('div');
+    row.className='wd-opt'+(equipped?' equipped':'')+(!owned?' wd-locked':'');
+    let right='';
+    if(equipped) right=`<span class="wd-equipped-tag">EQUIPPED</span>`;
+    else if(owned) right=`<button class="wd-equip" data-equip="${opt.id}">EQUIP</button>`;
+    else right=`<button class="wd-buy" data-buy="${opt.id}">$${opt.price}</button>`;
+    row.innerHTML=`<span class="wd-name">${opt.name}${opt.price===0?' (free)':''}</span>${right}`;
+    wrap.appendChild(row);
+  });
+  wrap.querySelectorAll('[data-equip]').forEach(b=>b.onclick=()=>equipItem(cat,b.dataset.equip));
+  wrap.querySelectorAll('[data-buy]').forEach(b=>b.onclick=()=>buyItem(cat,b.dataset.buy));
+  renderPreview();
+}
+
+function equipItem(cat,id){
+  const w=wardrobeGet();
+  w.equipped[cat]=id; wardrobeSet(w);
+  applyWardrobe(); renderShop();
+  wdToast('Equipped!');
+}
+function buyItem(cat,id){
+  const opt=WARDROBE_CATALOG[cat].options.find(o=>o.id===id); if(!opt) return;
+  const bal=walletGet();
+  if(bal<opt.price){ wdToast('Not enough money! Win battles to earn more.'); return; }
+  walletSet(bal-opt.price);
+  const w=wardrobeGet(); w.owned[cat]=w.owned[cat]||{}; w.owned[cat][id]=true; w.equipped[cat]=id; wardrobeSet(w);
+  applyWardrobe(); renderShop();
+  wdToast('Purchased & equipped!');
+}
+
+function openCustomizeShop(){
+  buildShopDOM();
+  ensureWardrobeDefaults();
+  _shopState.cat = _shopState.cat || 'hat';
+  _shopState.dir = 'down';
+  document.getElementById('wardrobe-overlay').classList.add('show');
+  renderShop();
+}
+function closeCustomizeShop(){
+  const ov=document.getElementById('wardrobe-overlay'); if(ov) ov.classList.remove('show');
+  applyWardrobe(); // make sure the overworld sprite reflects final choices
+}
+
+
 const SAVE_KEY = 'pokemon_dino_save_v2';
 
 function buildSaveData() {
@@ -4636,17 +4903,28 @@ try {
   }
 
   function injectTitleButton() {
-    const menu = document.getElementById("title-menu");
-    if (!menu) return;
-    const btn = document.createElement("button");
-    btn.className = "title-btn alt";
-    btn.id = "btn-mp-journey";
-    btn.textContent = "MULTIPLAYER JOURNEY";
-    // place it right after NEW JOURNEY for visibility
-    const after = document.getElementById("btn-new-journey");
-    if (after && after.nextSibling) menu.insertBefore(btn, after.nextSibling);
-    else menu.appendChild(btn);
-    btn.addEventListener("click", openOverlay);
+    // Robust: retry until the title menu exists, never double-insert, and give the
+    // button a distinct look + clear position so it's always visible.
+    let tries = 0;
+    const tryInsert = () => {
+      const menu = document.getElementById("title-menu");
+      if (!menu) { if (tries++ < 100) setTimeout(tryInsert, 100); return; }
+      if (document.getElementById("btn-mp-journey")) return; // already there
+      const btn = document.createElement("button");
+      btn.className = "title-btn alt";
+      btn.id = "btn-mp-journey";
+      btn.textContent = "🌐 MULTIPLAYER";
+      // distinct, eye-catching style so it stands out from the other buttons
+      btn.style.background = "linear-gradient(135deg,#7C4DFF,#4fc3f7)";
+      btn.style.color = "#fff";
+      btn.style.boxShadow = "0 4px 0 #4527a0";
+      // place it directly after NEW JOURNEY (skip whitespace text nodes)
+      const after = document.getElementById("btn-new-journey");
+      if (after) after.insertAdjacentElement("afterend", btn);
+      else menu.appendChild(btn);
+      btn.addEventListener("click", openOverlay);
+    };
+    tryInsert();
   }
 
   function openOverlay() {
