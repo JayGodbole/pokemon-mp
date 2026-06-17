@@ -5987,6 +5987,8 @@ try {
     frame: 0,
     stepsSinceBattle: 0,
     profileName: null,      // server profile (name+PIN)
+    hasCutter: false,       // bought the grass/tree cutter
+    cleared: new Set(),     // "x,y" tiles that have been cut/built-on (no grass, no encounters, no blockage)
   };
   const BT = 16;                 // SAME tile size as the overworld
   const BVIEW_W = 240, BVIEW_H = 160; // SAME internal view as the overworld (CSS upscales)
@@ -6043,8 +6045,17 @@ try {
     h = (h ^ (h >> 13)) * 1274126177;
     return ((h ^ (h >> 16)) >>> 0) / 4294967295;
   }
-  function isWildTree(x, y) { return hash2(x, y) < 0.035; }                 // sparser trees -> easy to walk around
-  function isTallGrass(x, y) { return !isWildTree(x, y) && hash2(x + 5000, y + 5000) < 0.4; } // lots of grass = lots of encounters
+  const tkey = (x, y) => x + "," + y;
+  function isCleared(x, y) { return B.cleared.has(tkey(x, y)); }
+  function isWildTree(x, y) { if (isCleared(x, y)) return false; return hash2(x, y) < 0.035; }   // sparser trees -> easy to walk around
+  function isTallGrass(x, y) { if (isCleared(x, y)) return false; return !isWildTree(x, y) && hash2(x + 5000, y + 5000) < 0.4; }
+  // Mark a tile cleared (cut or built on) — removes grass/tree, stops encounters & blockage.
+  function clearTile(x, y, broadcast) {
+    const key = tkey(x, y);
+    if (B.cleared.has(key)) return;
+    B.cleared.add(key);
+    if (broadcast) sendMsg("builder_clear", { x, y });
+  }
 
   /* ---------- DOM ---------- */
   function buildBuilderDOM() {
@@ -6112,13 +6123,14 @@ try {
         <div id="bld-top-right">
           <button class="bld-btn" id="bld-build">🏗️ BUILD</button>
           <button class="bld-btn" id="bld-rotbtn"><span id="bld-rot">↻ 0°</span></button>
+          <button class="bld-btn" id="bld-cutter">🪓 BUY CUTTER</button>
           <button class="bld-btn blue" id="bld-ride">🚗 RIDE</button>
           <button class="bld-btn green" id="bld-save">💾 SAVE</button>
           <button class="bld-btn red" id="bld-exit">✕ EXIT</button>
         </div>
       </div>
       <div id="bld-palette"></div>
-      <div id="bld-hint">WASD move · BUILD to place parts · R rotate · X remove · E ride · build walls/floors/roofs ARK-style</div>
+      <div id="bld-hint">WASD move · B = build menu · SPACE = cut grass\/trees \WASD move · BUILD to place parts · R rotate · X remove · E ride · build walls/floors/roofs ARK-style interact · R rotate · X remove · E ride</div>
       <!-- on-screen controls for phones -->
       <div id="bld-touch">
         <div id="bld-dpad">
@@ -6128,6 +6140,7 @@ try {
           <div class="bld-d" data-d="down">▼</div>
         </div>
         <div id="bld-actions">
+          <div class="bld-a" data-a="act">ACT</div>
           <div class="bld-a" data-a="x">REMOVE</div>
           <div class="bld-a" data-a="e">RIDE</div>
         </div>
@@ -6169,6 +6182,7 @@ try {
       if (!pal.classList.contains("show")) { B.placeMode = null; updatePaletteActive(); }
     };
     document.getElementById("bld-rotbtn").onclick = () => { B.rot = (B.rot + 1) % 4; updateRotLabel(); bToast("Rotation: " + (B.rot * 90) + "°"); };
+    document.getElementById("bld-cutter").onclick = buyCutter;
     document.getElementById("bld-ride").onclick = toggleRide;
     document.getElementById("bld-save").onclick = saveBuilderProgress;
     document.getElementById("bld-exit").onclick = closeBuilder;
@@ -6249,6 +6263,9 @@ try {
     ensureBuilderParty();
     document.getElementById("mp-builder").classList.add("show");
     refreshBWallet();
+    // restore cutter ownership
+    try { B.hasCutter = localStorage.getItem("pokemon_dino_builder_cutter") === "1"; } catch (e) {}
+    const cbtn = document.getElementById("bld-cutter"); if (cbtn) cbtn.textContent = B.hasCutter ? "🪓 CUTTER ✓" : "🪓 BUY CUTTER";
     const creds = B._loginCreds || { name: MP.name || "Builder", pin: "" };
     sendMsg("builder_join", { name: creds.name, pin: creds.pin });
     // autosave progress every 20s
@@ -6288,10 +6305,55 @@ try {
     if (B.inBattle) return;
     const map = { arrowup: "up", w: "up", arrowdown: "down", s: "down", arrowleft: "left", a: "left", arrowright: "right", d: "right" };
     if (map[k]) { B.held = map[k]; e.preventDefault(); }
+    if (k === "b") { toggleBuildMenu(); e.preventDefault(); }          // B = open/close BUILD menu
+    if (k === " " || k === "enter") { builderInteract(); e.preventDefault(); }  // SPACE = interact (cut / enter)
     if (k === "x") { removeNearbyOwn(); e.preventDefault(); }
     if (k === "e") { toggleRide(); e.preventDefault(); }
     if (k === "r") { B.rot = (B.rot + 1) % 4; bToast("Rotation: " + (B.rot * 90) + "°"); updateRotLabel(); e.preventDefault(); }
     if (k === "escape") { closeBuilder(); }
+  }
+
+  function toggleBuildMenu() {
+    const pal = document.getElementById("bld-palette");
+    pal.classList.toggle("show");
+    if (!pal.classList.contains("show")) { B.placeMode = null; updatePaletteActive(); }
+  }
+
+  // SPACE interact: cut the grass/tree you're facing (if you own a cutter),
+  // or enter a building door you're standing on.
+  function builderInteract() {
+    const gx = Math.round(B.player.x), gy = Math.round(B.player.y);
+    // enter building if on its door
+    for (const o of B.objects.values()) {
+      if (!ENTERABLE[o.type]) continue;
+      const d = doorTile(o);
+      if (gx === d.x && gy === d.y) { enterBuilding(o); return; }
+    }
+    // otherwise try to cut the tile we're facing
+    const dv = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[B.player.dir] || [0, 1];
+    const fx = gx + dv[0], fy = gy + dv[1];
+    const targets = [[fx, fy], [gx, gy]]; // facing tile first, then current tile
+    for (const [tx, ty] of targets) {
+      if (isWildTree(tx, ty) || isTallGrass(tx, ty)) {
+        if (!B.hasCutter) { bToast("You need a CUTTER! Tap 🪓 BUY CUTTER ($1500)."); return; }
+        const wasTree = isWildTree(tx, ty);
+        clearTile(tx, ty, true);
+        bToast(wasTree ? "Tree cut down! 🌳→" : "Grass cleared! 🌿→");
+        return;
+      }
+    }
+    bToast("Nothing to cut here. Face grass or a tree.");
+  }
+
+  function buyCutter() {
+    if (B.hasCutter) { bToast("You already own a cutter."); return; }
+    const price = 1500;
+    if (bWallet() < price) { bToast("Cutter costs $1500 — battle to earn more."); return; }
+    bWalletSet(bWallet() - price); refreshBWallet();
+    B.hasCutter = true;
+    try { localStorage.setItem("pokemon_dino_builder_cutter", "1"); } catch (e) {}
+    const btn = document.getElementById("bld-cutter"); if (btn) btn.textContent = "🪓 CUTTER ✓";
+    bToast("Cutter bought! Face grass/trees and press SPACE to cut.");
   }
   function updateRotLabel() { const el = document.getElementById("bld-rot"); if (el) el.textContent = "↻ " + (B.rot * 90) + "°"; }
   function builderKeyUp(e) {
@@ -6321,7 +6383,8 @@ try {
     document.querySelectorAll("#bld-actions .bld-a").forEach((el) => {
       el.addEventListener("click", (e) => {
         e.preventDefault();
-        if (el.dataset.a === "x") removeNearbyOwn();
+        if (el.dataset.a === "act") builderInteract();
+        else if (el.dataset.a === "x") removeNearbyOwn();
         else if (el.dataset.a === "e") toggleRide();
       });
     });
@@ -6359,6 +6422,9 @@ try {
     }
     bWalletSet(bWallet() - c.price); refreshBWallet();
     B._pendingCost = (B._pendingCost || 0) + c.price;
+    // placing on grass auto-clears the tile(s): grass disappears, no encounters there
+    if (fp) { for (let dy = 0; dy < fp.h; dy++) for (let dx = 0; dx < fp.w; dx++) clearTile(x + dx, y + dy, true); }
+    else clearTile(x, y, true);
     sendMsg("builder_place", { objType: key, x, y, rot: (c.rotatable ? B.rot : 0) });
   }
   function removeNearbyOwn() {
@@ -6851,6 +6917,7 @@ try {
     switch (msg.type) {
       case "builder_init":
         B.me = msg.you; B.objects.clear(); (msg.objects || []).forEach((o) => B.objects.set(o.id, o));
+        B.cleared = new Set(msg.cleared || []);   // restore cleared (cut/built) tiles
         B.peers.clear(); (msg.peers || []).forEach((p) => B.peers.set(p.id, mkPeer(p)));
         // apply this player's saved server profile (wallet/inventory/position)
         if (msg.profile) {
@@ -6882,6 +6949,7 @@ try {
       }
       case "builder_placed": B.objects.set(msg.obj.id, msg.obj); if (msg.obj.owner === B.me) { B._pendingCost = 0; bToast(catInfo(msg.obj.type).name + " placed!"); } return true;
       case "builder_removed": B.objects.delete(msg.id); return true;
+      case "builder_cleared": if (msg.key) B.cleared.add(msg.key); return true;
       case "builder_error": if (B._pendingCost) { bWalletSet(bWallet() + B._pendingCost); B._pendingCost = 0; refreshBWallet(); } bToast(msg.message || "Build error"); return true;
       case "builder_chat": bToast((msg.name || "?") + ": " + msg.text); return true;
     }

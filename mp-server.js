@@ -23,6 +23,7 @@ const PROFILE_FILE = path.join(__dirname, "builder-profiles.json");
 const builder = {
   clients: new Map(),       // playerId -> { ws, name, pos:{x,y,dir,moving,vehicle}, profileKey }
   objects: [],              // placed objects
+  cleared: [],              // ["x,y", ...] tiles cleared (cut/built) -> no grass/trees/encounters
   nextObjId: 1,
 };
 // Per-player profiles saved on the server: key = lowercase name -> { name, pin, wallet, pos, inventory }
@@ -32,8 +33,9 @@ function loadBuilder() {
     const raw = fs.readFileSync(BUILDER_FILE, "utf8");
     const data = JSON.parse(raw);
     builder.objects = Array.isArray(data.objects) ? data.objects : [];
+    builder.cleared = Array.isArray(data.cleared) ? data.cleared : [];
     builder.nextObjId = data.nextObjId || (builder.objects.reduce((m, o) => Math.max(m, o.id), 0) + 1);
-    console.log("Builder world loaded:", builder.objects.length, "objects");
+    console.log("Builder world loaded:", builder.objects.length, "objects,", builder.cleared.length, "cleared tiles");
   } catch { /* no file yet */ }
   try {
     const raw = fs.readFileSync(PROFILE_FILE, "utf8");
@@ -48,7 +50,7 @@ function saveBuilderSoon() {
   _saveTimer = setTimeout(() => {
     _saveTimer = null;
     try {
-      fs.writeFileSync(BUILDER_FILE, JSON.stringify({ objects: builder.objects, nextObjId: builder.nextObjId }));
+      fs.writeFileSync(BUILDER_FILE, JSON.stringify({ objects: builder.objects, cleared: builder.cleared, nextObjId: builder.nextObjId }));
     } catch (e) { console.warn("Builder save failed:", e.message); }
   }, 1200);
 }
@@ -261,7 +263,7 @@ wss.on("connection", (ws) => {
         .filter(([pid]) => pid !== ws.playerId)
         .map(([pid, c]) => ({ id: pid, name: c.name, ...c.pos }));
       send(ws, "builder_init", {
-        you: ws.playerId, objects: builder.objects, peers,
+        you: ws.playerId, objects: builder.objects, cleared: builder.cleared, peers,
         profile: { name: prof.name, wallet: prof.wallet || 0, inventory: prof.inventory || {}, pos: prof.pos || { x: 0, y: 0 } },
       });
       builderBroadcast("builder_peer_join", { id: ws.playerId, name }, ws.playerId);
@@ -300,6 +302,16 @@ wss.on("connection", (ws) => {
         prof.inventory = inv;
       }
       saveProfilesSoon();
+      return;
+    }
+    if (type === "builder_clear") {
+      if (!builder.clients.has(ws.playerId)) return;
+      const key = (Math.round(Number(msg.x) || 0)) + "," + (Math.round(Number(msg.y) || 0));
+      if (!builder.cleared.includes(key)) {
+        if (builder.cleared.length < 200000) builder.cleared.push(key);
+        saveBuilderSoon();
+        builderBroadcast("builder_cleared", { key });
+      }
       return;
     }
     if (type === "builder_place") {
