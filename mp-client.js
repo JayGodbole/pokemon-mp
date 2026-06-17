@@ -1326,10 +1326,11 @@
     { key: "land",     name: "Land Plot",   price: 500,   color: "#caa15a" },
     { key: "tree",     name: "Tree",        price: 100,   color: "#2e7d32" },
     { key: "flower",   name: "Flowerbed",   price: 80,    color: "#e573a0" },
-    { key: "fence",    name: "Fence",       price: 60,    color: "#b08850" },
-    { key: "house",    name: "House",       price: 3000,  color: "#c0563a" },
-    { key: "mansion",  name: "Mansion",     price: 12000, color: "#9c6ad6" },
-    { key: "shop",     name: "Shop",        price: 6000,  color: "#3a8ac0" },
+    { key: "fence",    name: "Fence",       price: 60,    color: "#caa46a" },
+    { key: "lamp",     name: "Lamp Post",   price: 250,   color: "#cfd4da" },
+    { key: "house",    name: "House",       price: 3000,  color: "#d9a066" },
+    { key: "mansion",  name: "Mansion",     price: 12000, color: "#c9b59a" },
+    { key: "shop",     name: "Shop",        price: 6000,  color: "#e0c27a" },
     { key: "pool",     name: "Pool",        price: 4000,  color: "#39b6e0" },
     { key: "car",      name: "Car",         price: 8000,  color: "#d83838" },
     { key: "bike",     name: "Bike",        price: 1500,  color: "#2f6cc4" },
@@ -1338,10 +1339,11 @@
   const catInfo = (k) => BUILD_CATALOG.find((c) => c.key === k);
   const VEHICLES = { car: 0.30, bike: 0.24, boat: 0.28 };
   // Building footprints (w x h in tiles). Buildings are large & enterable.
-  const FOOTPRINT = { house: { w: 2, h: 2 }, shop: { w: 2, h: 2 }, pool: { w: 2, h: 2 }, mansion: { w: 3, h: 3 } };
+  const FOOTPRINT = { house: { w: 3, h: 3 }, shop: { w: 3, h: 3 }, pool: { w: 3, h: 2 }, mansion: { w: 4, h: 4 } };
   const ENTERABLE = { house: 1, mansion: 1, shop: 1 };
+  const SOLID_OBJ = { lamp: 1 }; // single-tile solids besides fence/tree
   // Solid (can't walk through): fences, trees, and building tiles (except their door).
-  const SOLID = { tree: 1, house: 1, mansion: 1, shop: 1, pool: 1, fence: 1 };
+  const SOLID = { tree: 1, house: 1, mansion: 1, shop: 1, pool: 1, fence: 1, lamp: 1 };
 
   function hash2(x, y) {
     let h = (x * 374761393 + y * 668265263) ^ 0x5bd1e995;
@@ -1809,46 +1811,182 @@
     }
     if (name) { ctx.font = "5px 'Press Start 2P',monospace"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(sx + 8 - name.length * 3 - 2, sy - 14, name.length * 6 + 4, 8); ctx.fillStyle = "#FFD700"; ctx.fillText(name.slice(0, 10), sx + 8, sy - 8); ctx.textAlign = "start"; }
   }
+  // pixel helper
+  function px(ctx, x, y, w, h, c) { ctx.fillStyle = c; ctx.fillRect(Math.round(x), Math.round(y), w, h); }
+
   function drawObject(ctx, o, sx, sy) {
     const c = catInfo(o.type); const col = c ? c.color : "#888";
-    if (o.type === "land") { ctx.fillStyle = "rgba(202,161,90,0.55)"; ctx.fillRect(sx, sy, BT, BT); ctx.strokeStyle = "#a07b34"; ctx.strokeRect(sx + 0.5, sy + 0.5, BT - 1, BT - 1); return; }
-    if (o.type === "flower") { ctx.fillStyle = col; ctx.fillRect(sx + 3, sy + 3, 4, 4); ctx.fillRect(sx + 9, sy + 9, 4, 4); ctx.fillStyle = "#fff200"; ctx.fillRect(sx + 4, sy + 4, 1, 1); ctx.fillRect(sx + 10, sy + 10, 1, 1); return; }
-    if (o.type === "fence") { ctx.fillStyle = col; ctx.fillRect(sx + 1, sy + 6, BT - 2, 3); ctx.fillRect(sx + 3, sy + 3, 2, 10); ctx.fillRect(sx + BT - 5, sy + 3, 2, 10); return; }
+    if (o.type === "land") {
+      // tilled soil with furrows (like the crop patches in the reference)
+      px(ctx, sx, sy, BT, BT, "#a9763e");
+      ctx.fillStyle = "#8a5e2e"; for (let i = 2; i < BT; i += 4) ctx.fillRect(sx + i, sy + 1, 1, BT - 2);
+      ctx.fillStyle = "#c08a4c"; for (let i = 0; i < BT; i += 4) ctx.fillRect(sx + i, sy + 1, 1, BT - 2);
+      return;
+    }
+    if (o.type === "flower") { drawFlowerbed(ctx, sx, sy); return; }
+    if (o.type === "fence") { drawFence(ctx, sx, sy); return; }
+    if (o.type === "lamp") { drawLamp(ctx, sx, sy); return; }
     if (o.type === "tree") { if (window.drawTile && window.T) window.drawTile(ctx, window.T.TREE, sx, sy, o.x, o.y, B.frame); return; }
     if (VEHICLES[o.type]) { drawVehicle(ctx, sx, sy, o.type, col); return; }
     drawBuilding(ctx, sx, sy, o.type, col);
-    if (o.ownerName) { ctx.font = "5px 'Press Start 2P',monospace"; ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.textAlign = "center"; ctx.fillText(o.ownerName.slice(0, 8), sx + BT / 2, sy - 2); ctx.textAlign = "start"; }
+    if (o.ownerName) {
+      ctx.font = "5px 'Press Start 2P',monospace"; ctx.textAlign = "center";
+      const nm = o.ownerName.slice(0, 8); const w = nm.length * 6 + 4;
+      const fp = FOOTPRINT[o.type] || { w: 1, h: 1 };
+      px(ctx, sx + fp.w * BT / 2 - w / 2, sy - 9, w, 8, "rgba(0,0,0,.5)");
+      ctx.fillStyle = "#ffe066"; ctx.fillText(nm, sx + fp.w * BT / 2, sy - 3); ctx.textAlign = "start";
+    }
   }
+
+  // ---- detailed flowerbed ----
+  function drawFlowerbed(ctx, sx, sy) {
+    px(ctx, sx + 1, sy + 1, BT - 2, BT - 2, "#3c7a35");          // bush base
+    px(ctx, sx + 1, sy + 1, BT - 2, 2, "#4f9a45");               // highlight
+    const cols = ["#ff5d6c", "#ffd23f", "#ff8fc7", "#7ad0ff"];
+    const spots = [[3, 3], [9, 4], [5, 9], [11, 10], [7, 6]];
+    spots.forEach((s, i) => {
+      const cc = cols[i % cols.length];
+      px(ctx, sx + s[0], sy + s[1], 3, 3, cc);
+      px(ctx, sx + s[0] + 1, sy + s[1] + 1, 1, 1, "#fff7c0");    // pollen center
+    });
+  }
+  // ---- wooden fence (posts + rails) ----
+  function drawFence(ctx, sx, sy) {
+    px(ctx, sx, sy + 5, BT, 2, "#8a5a2a");                       // top rail (shadow)
+    px(ctx, sx, sy + 4, BT, 1, "#caa46a");                       // top rail (light)
+    px(ctx, sx, sy + 10, BT, 2, "#8a5a2a");                      // bottom rail
+    px(ctx, sx, sy + 9, BT, 1, "#caa46a");
+    // posts
+    [2, BT - 5].forEach((pxn) => {
+      px(ctx, sx + pxn, sy + 2, 3, BT - 4, "#9c6b34");
+      px(ctx, sx + pxn, sy + 2, 1, BT - 4, "#caa46a");
+      px(ctx, sx + pxn, sy + 2, 3, 1, "#caa46a");
+    });
+  }
+  // ---- lamp post (matches the reference's lamp) ----
+  function drawLamp(ctx, sx, sy) {
+    px(ctx, sx + BT / 2 - 1, sy + 4, 2, BT - 5, "#5a6470");       // pole
+    px(ctx, sx + BT / 2 - 1, sy + 4, 1, BT - 5, "#828c98");       // pole highlight
+    px(ctx, sx + BT / 2 - 3, sy + 1, 6, 4, "#3a4048");           // lamp housing
+    px(ctx, sx + BT / 2 - 2, sy + 2, 4, 2, "#ffe98a");           // glowing glass
+    px(ctx, sx + BT / 2 - 4, sy + BT - 2, 8, 2, "#444c56");       // base
+  }
+
   function drawBuilding(ctx, sx, sy, type, col) {
     const fp = FOOTPRINT[type] || { w: 1, h: 1 };
     const w = fp.w * BT, h = fp.h * BT;
+
     if (type === "pool") {
-      ctx.fillStyle = "#cdb877"; ctx.fillRect(sx, sy, w, h);
-      ctx.fillStyle = "#39b6e0"; ctx.fillRect(sx + 3, sy + 3, w - 6, h - 6);
-      ctx.strokeStyle = "#fff"; ctx.strokeRect(sx + 3.5, sy + 3.5, w - 7, h - 7);
+      // wooden deck + tiled pool + ladder (like the reference's pool)
+      px(ctx, sx, sy, w, h, "#caa46a");
+      px(ctx, sx + 1, sy + 1, w - 2, h - 2, "#b58a4e");
+      px(ctx, sx + 3, sy + 3, w - 6, h - 6, "#1f93c7");          // deep water
+      px(ctx, sx + 3, sy + 3, w - 6, 3, "#4fc3f7");              // top shimmer
+      ctx.fillStyle = "#bfe9ff";
+      for (let i = 0; i < (w - 8); i += 6) { ctx.fillRect(sx + 5 + i, sy + 8, 3, 1); ctx.fillRect(sx + 7 + i, sy + 13, 2, 1); }
+      // ladder rails
+      px(ctx, sx + w - 7, sy + 4, 1, h - 8, "#e8e8e8");
+      px(ctx, sx + w - 4, sy + 4, 1, h - 8, "#e8e8e8");
       return;
     }
-    // body
-    const roofH = Math.floor(h * 0.34);
-    ctx.fillStyle = col; ctx.fillRect(sx, sy + roofH, w, h - roofH);
-    // roof
-    ctx.fillStyle = "#7a2d1c"; ctx.beginPath();
-    ctx.moveTo(sx - 2, sy + roofH); ctx.lineTo(sx + w / 2, sy); ctx.lineTo(sx + w + 2, sy + roofH); ctx.closePath(); ctx.fill();
-    // windows
-    ctx.fillStyle = "#bfe3ff";
-    for (let i = 0; i < fp.w; i++) ctx.fillRect(sx + 4 + i * BT, sy + roofH + 4, 6, 6);
-    // DOOR at bottom-center tile (the entrance), with a glowing frame
-    const doorX = sx + Math.floor(fp.w / 2) * BT;
+
+    // ===== Japanese-style house (matches reference) =====
+    const shadow = "rgba(0,0,0,0.18)";
+    px(ctx, sx + 3, sy + h - 3, w, 3, shadow);                   // ground shadow
+
+    const wallTop = Math.floor(h * 0.46);
+    // ---- walls (plaster) ----
+    const wallCol = (type === "shop") ? "#efd79a" : (type === "mansion") ? "#e6dcc4" : "#f0e2c2";
+    const wallShade = (type === "shop") ? "#d8bd78" : (type === "mansion") ? "#cdbf9f" : "#d8c79e";
+    px(ctx, sx + 1, sy + wallTop, w - 2, h - wallTop, wallCol);
+    px(ctx, sx + 1, sy + h - 4, w - 2, 4, wallShade);            // base shading
+    // dark timber frame beams (Japanese look)
+    ctx.fillStyle = "#6b4a2a";
+    px(ctx, sx + 1, sy + wallTop, 2, h - wallTop, "#6b4a2a");    // left beam
+    px(ctx, sx + w - 3, sy + wallTop, 2, h - wallTop, "#6b4a2a");// right beam
+    for (let i = 1; i < fp.w; i++) px(ctx, sx + i * BT - 1, sy + wallTop, 2, h - wallTop, "#6b4a2a"); // vertical beams
+
+    // ---- windows (warm lit shoji panels) ----
+    const winY = sy + wallTop + 4;
+    for (let i = 0; i < fp.w; i++) {
+      if (i === Math.floor(fp.w / 2)) continue; // door column gets the door, not a window
+      const wx = sx + 5 + i * BT;
+      px(ctx, wx, winY, 8, 7, "#7a4a28");                        // frame
+      px(ctx, wx + 1, winY + 1, 6, 5, "#ffe9a8");                // glow
+      px(ctx, wx + 3, winY + 1, 1, 5, "#caa46a");               // mullion
+      px(ctx, wx + 1, winY + 3, 6, 1, "#caa46a");
+    }
+
+    // ---- big hip roof (layered shingles, overhanging eaves) ----
+    const eaveH = 3, peakH = Math.floor(wallTop * 0.62);
+    // slim dark eave underside (overhang)
+    px(ctx, sx - 2, sy + wallTop - eaveH, w + 4, eaveH, "#6e2e18");
+    // roof slabs (tiers) — terracotta like the reference
+    const roofMain = "#b5532f", roofDark = "#8f3d22", roofLight = "#d27a4a", ridge = "#6e2e18";
+    // lower roof slab
+    px(ctx, sx - 2, sy + peakH, w + 4, wallTop - peakH - eaveH + 2, roofMain);
+    // upper triangular roof
+    ctx.beginPath();
+    ctx.moveTo(sx + 2, sy + peakH + 1);
+    ctx.lineTo(sx + w / 2, sy + 1);
+    ctx.lineTo(sx + w - 2, sy + peakH + 1);
+    ctx.closePath(); ctx.fillStyle = roofMain; ctx.fill();
+    // shading on right half of the triangle
+    ctx.beginPath();
+    ctx.moveTo(sx + w / 2, sy + 1);
+    ctx.lineTo(sx + w - 2, sy + peakH + 1);
+    ctx.lineTo(sx + w / 2, sy + peakH + 1);
+    ctx.closePath(); ctx.fillStyle = roofDark; ctx.fill();
+    // shingle rows
+    ctx.fillStyle = roofDark;
+    for (let ry = sy + peakH + 3; ry < sy + wallTop - eaveH; ry += 3) ctx.fillRect(sx - 2, ry, w + 4, 1);
+    // ridge cap + highlight
+    px(ctx, sx + w / 2 - 1, sy + 1, 2, peakH, ridge);
+    ctx.fillStyle = roofLight;
+    ctx.beginPath(); ctx.moveTo(sx + 3, sy + peakH); ctx.lineTo(sx + w / 2, sy + 2); ctx.lineTo(sx + w / 2 - 2, sy + peakH); ctx.closePath(); ctx.fill();
+
+    // ---- DOOR at bottom-center tile (the entrance, sliding-door style) ----
+    const doorTileX = sx + Math.floor(fp.w / 2) * BT;
     const doorY = sy + h - BT;
-    ctx.fillStyle = "#3a2a18"; ctx.fillRect(doorX + BT / 2 - 4, doorY + BT - 11, 8, 11);
-    ctx.fillStyle = "#FFD700"; ctx.fillRect(doorX + BT / 2 - 5, doorY + BT - 12, 1, 12); ctx.fillRect(doorX + BT / 2 + 4, doorY + BT - 12, 1, 12);
-    ctx.fillStyle = "#ffe066"; ctx.fillRect(doorX + BT / 2 + 1, doorY + BT - 6, 1, 2); // doorknob
+    const dx = doorTileX + BT / 2 - 5, dy = doorY + BT - 13;
+    px(ctx, dx - 1, dy - 1, 12, 14, "#5a3b1f");                  // dark frame
+    px(ctx, dx, dy, 10, 13, "#caa46a");                          // wood door
+    px(ctx, dx + 4, dy, 2, 13, "#7a4a28");                       // split (sliding doors)
+    px(ctx, dx + 1, dy + 1, 3, 4, "#ffe9a8");                    // little glass panes
+    px(ctx, dx + 6, dy + 1, 3, 4, "#ffe9a8");
+    px(ctx, dx + 3, dy + 7, 1, 2, "#3a2a18");                    // handle
+    px(ctx, dx + 6, dy + 7, 1, 2, "#3a2a18");
+    // shop awning / sign
+    if (type === "shop") {
+      px(ctx, sx + 2, sy + wallTop, w - 4, 3, "#c0392b");
+      ctx.fillStyle = "#fff"; for (let i = 0; i < w - 6; i += 6) ctx.fillRect(sx + 4 + i, sy + wallTop, 3, 3);
+    }
+    // mansion: golden trim on the ridge
+    if (type === "mansion") { px(ctx, sx + w / 2 - 2, sy + 2, 4, 2, "#FFD700"); }
   }
+
   function drawVehicle(ctx, sx, sy, type, col) {
-    if (type === "bike") { ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(sx + 5, sy + BT - 4, 3, 0, 7); ctx.arc(sx + BT - 5, sy + BT - 4, 3, 0, 7); ctx.stroke(); return; }
-    ctx.fillStyle = col; ctx.fillRect(sx + 2, sy + 6, BT - 4, BT - 10);
-    ctx.fillStyle = "#bfe3ff"; ctx.fillRect(sx + 4, sy + 7, BT - 8, 3);
-    ctx.fillStyle = "#222"; ctx.fillRect(sx + 3, sy + BT - 5, 3, 3); ctx.fillRect(sx + BT - 6, sy + BT - 5, 3, 3);
+    px(ctx, sx + 2, sy + BT - 3, BT - 4, 2, "rgba(0,0,0,0.2)");  // shadow
+    if (type === "bike") {
+      ctx.strokeStyle = "#333"; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.arc(sx + 5, sy + BT - 5, 3.2, 0, 7); ctx.arc(sx + BT - 5, sy + BT - 5, 3.2, 0, 7); ctx.stroke();
+      ctx.strokeStyle = col; ctx.beginPath();
+      ctx.moveTo(sx + 5, sy + BT - 5); ctx.lineTo(sx + BT / 2, sy + 6); ctx.lineTo(sx + BT - 5, sy + BT - 5); ctx.moveTo(sx + BT / 2, sy + 6); ctx.lineTo(sx + BT - 4, sy + 6); ctx.stroke();
+      return;
+    }
+    if (type === "boat") {
+      px(ctx, sx + 2, sy + 8, BT - 4, 5, "#8d6e63");            // hull
+      px(ctx, sx + 1, sy + 11, BT - 2, 3, "#6d4f44");
+      px(ctx, sx + BT / 2 - 1, sy + 2, 2, 7, "#e8e8e8");        // mast
+      ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(sx + BT / 2 + 1, sy + 2); ctx.lineTo(sx + BT - 3, sy + 8); ctx.lineTo(sx + BT / 2 + 1, sy + 8); ctx.closePath(); ctx.fill();
+      return;
+    }
+    // car — rounded body, windows, wheels
+    px(ctx, sx + 2, sy + 5, BT - 4, BT - 9, col);
+    px(ctx, sx + 2, sy + 5, BT - 4, 2, "#fff6"); // top sheen
+    px(ctx, sx + 4, sy + 6, BT - 8, 3, "#bfe3ff"); // windshield
+    px(ctx, sx + 3, sy + BT - 4, 3, 3, "#222"); px(ctx, sx + BT - 6, sy + BT - 4, 3, 3, "#222"); // wheels
+    px(ctx, sx + 3, sy + 7, 1, 1, "#ffd23f"); px(ctx, sx + BT - 4, sy + 7, 1, 1, "#ffd23f"); // headlights
   }
 
   /* ---------- network ---------- */
