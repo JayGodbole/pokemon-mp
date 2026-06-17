@@ -1299,85 +1299,78 @@
 
   /* ============================================================
      BUILDER MODE  (global shared, persisted, endless world)
-     - Endless procedurally-generated grass world with scattered trees.
-     - Buy land tiles, place houses/decor, buy & ride vehicles.
-     - Everyone spawns at (0,0) and sees each other live.
-     - Spends from the persistent wallet (pokemon_dino_wallet).
+     Now rendered with the SAME graphics as the journey overworld:
+     - game's drawTile() for grass/trees, getCharCanvas('player') for the
+       customizable trainer sprite (and 'oak' for peers),
+     - same TILE size & view, and REAL wild-Pokemon battles to earn money
+       (winnings bank into the wallet that funds building).
      ============================================================ */
   const B = {
-    on: false,
+    on: false, inBattle: false,
     canvas: null, ctx: null, raf: null,
     me: null,
     cam: { x: 0, y: 0 },
     player: { x: 0, y: 0, px: 0, py: 0, dir: "down", moving: false, vehicle: null, tx: 0, ty: 0, t: 1, fx: 0, fy: 0 },
     held: null,
-    peers: new Map(),      // id -> {name,x,y,dir,moving,vehicle,px,py,...}
-    objects: new Map(),    // id -> {id,owner,ownerName,type,x,y}
-    placeMode: null,       // a catalog key when in "place" mode
+    peers: new Map(),
+    objects: new Map(),
+    placeMode: null,
     lastSent: 0, lastSig: "",
     frame: 0,
+    stepsSinceBattle: 0,
   };
-  const BT = 24;           // builder tile size (px, internal)
-  const BVIEW_W = 640, BVIEW_H = 420;
+  const BT = 16;                 // SAME tile size as the overworld
+  const BVIEW_W = 240, BVIEW_H = 160; // SAME internal view as the overworld (CSS upscales)
 
-  // Catalog of buildable things (price from wallet).
   const BUILD_CATALOG = [
-    { key: "land",     name: "Land Plot",   price: 500,   cat: "land",    color: "#caa15a" },
-    { key: "tree",     name: "Tree",        price: 100,   cat: "decor",   color: "#2e7d32" },
-    { key: "flower",   name: "Flowerbed",   price: 80,    cat: "decor",   color: "#e573a0" },
-    { key: "fence",    name: "Fence",       price: 60,    cat: "decor",   color: "#b08850" },
-    { key: "house",    name: "House",       price: 3000,  cat: "build",   color: "#c0563a" },
-    { key: "mansion",  name: "Mansion",     price: 12000, cat: "build",   color: "#9c6ad6" },
-    { key: "shop",     name: "Shop",        price: 6000,  cat: "build",   color: "#3a8ac0" },
-    { key: "pool",     name: "Pool",        price: 4000,  cat: "build",   color: "#39b6e0" },
-    { key: "car",      name: "Car",         price: 8000,  cat: "vehicle", color: "#d83838" },
-    { key: "bike",     name: "Bike",        price: 1500,  cat: "vehicle", color: "#2f6cc4" },
-    { key: "boat",     name: "Boat",        price: 10000, cat: "vehicle", color: "#8d6e63" },
+    { key: "land",     name: "Land Plot",   price: 500,   color: "#caa15a" },
+    { key: "tree",     name: "Tree",        price: 100,   color: "#2e7d32" },
+    { key: "flower",   name: "Flowerbed",   price: 80,    color: "#e573a0" },
+    { key: "fence",    name: "Fence",       price: 60,    color: "#b08850" },
+    { key: "house",    name: "House",       price: 3000,  color: "#c0563a" },
+    { key: "mansion",  name: "Mansion",     price: 12000, color: "#9c6ad6" },
+    { key: "shop",     name: "Shop",        price: 6000,  color: "#3a8ac0" },
+    { key: "pool",     name: "Pool",        price: 4000,  color: "#39b6e0" },
+    { key: "car",      name: "Car",         price: 8000,  color: "#d83838" },
+    { key: "bike",     name: "Bike",        price: 1500,  color: "#2f6cc4" },
+    { key: "boat",     name: "Boat",        price: 10000, color: "#8d6e63" },
   ];
   const catInfo = (k) => BUILD_CATALOG.find((c) => c.key === k);
-  const VEHICLES = { car: 0.34, bike: 0.26, boat: 0.30 }; // move speed per tick when riding
+  const VEHICLES = { car: 0.30, bike: 0.24, boat: 0.28 };
+  const SOLID = { tree: 1, house: 1, mansion: 1, shop: 1, pool: 1 };
 
-  // deterministic pseudo-random for endless tree scatter
   function hash2(x, y) {
     let h = (x * 374761393 + y * 668265263) ^ 0x5bd1e995;
     h = (h ^ (h >> 13)) * 1274126177;
     return ((h ^ (h >> 16)) >>> 0) / 4294967295;
   }
-  function isWildTree(x, y) { return hash2(x, y) < 0.07; }       // ~7% trees
-  function isWildFlower(x, y) { return hash2(x + 9999, y - 9999) < 0.04; }
+  function isWildTree(x, y) { return hash2(x, y) < 0.06; }
+  function isTallGrass(x, y) { return !isWildTree(x, y) && hash2(x + 5000, y + 5000) < 0.16; } // battle zones
 
   /* ---------- DOM ---------- */
   function buildBuilderDOM() {
     if (document.getElementById("mp-builder")) return;
     const css = document.createElement("style");
     css.textContent = `
-      #mp-builder{position:fixed;inset:0;z-index:10080;background:#1a1a2e;display:none;
-        flex-direction:column;font-family:'Press Start 2P',monospace;}
+      #mp-builder{position:fixed;inset:0;z-index:10080;background:#000;display:none;
+        flex-direction:column;align-items:center;justify-content:center;font-family:'Press Start 2P',monospace;}
       #mp-builder.show{display:flex;}
-      #bld-canvas{flex:1;width:100%;height:100%;image-rendering:pixelated;display:block;background:#3aa655;}
-      #bld-hud{position:absolute;top:8px;left:8px;right:8px;display:flex;justify-content:space-between;
-        align-items:flex-start;pointer-events:none;}
-      #bld-wallet{background:rgba(15,24,48,.9);color:#7CFC9A;border:2px solid #FFD700;border-radius:8px;
-        padding:8px 12px;font-size:9px;pointer-events:auto;}
+      #bld-canvas{width:min(96vw,720px);height:auto;aspect-ratio:3/2;image-rendering:pixelated;display:block;background:#62a045;border:4px solid #222;border-radius:6px;}
+      #bld-hud{position:fixed;top:10px;left:10px;right:10px;display:flex;justify-content:space-between;align-items:flex-start;pointer-events:none;z-index:10081;}
+      #bld-wallet{background:rgba(15,24,48,.9);color:#7CFC9A;border:2px solid #FFD700;border-radius:8px;padding:8px 12px;font-size:9px;pointer-events:auto;}
       #bld-top-right{display:flex;gap:6px;pointer-events:auto;}
-      .bld-btn{background:#FFD700;color:#111;border:none;border-radius:8px;padding:8px 11px;font-size:8px;
-        font-family:'Press Start 2P',monospace;cursor:pointer;box-shadow:0 3px 0 #b8860b;}
+      .bld-btn{background:#FFD700;color:#111;border:none;border-radius:8px;padding:8px 11px;font-size:8px;font-family:'Press Start 2P',monospace;cursor:pointer;box-shadow:0 3px 0 #b8860b;}
       .bld-btn.red{background:#8B0000;color:#fff;box-shadow:0 3px 0 #5a0000;}
       .bld-btn.blue{background:#4fc3f7;color:#062a3a;box-shadow:0 3px 0 #0277bd;}
-      #bld-palette{position:absolute;left:8px;bottom:8px;right:8px;display:none;flex-wrap:wrap;gap:6px;
-        background:rgba(15,24,48,.92);border:2px solid #FFD700;border-radius:10px;padding:8px;max-height:34vh;overflow:auto;}
+      #bld-palette{position:fixed;left:10px;bottom:10px;right:10px;display:none;flex-wrap:wrap;gap:6px;background:rgba(15,24,48,.92);border:2px solid #FFD700;border-radius:10px;padding:8px;max-height:34vh;overflow:auto;z-index:10081;}
       #bld-palette.show{display:flex;}
-      .bld-item{background:#2b3350;color:#fff;border:2px solid transparent;border-radius:8px;padding:8px;
-        font-size:7px;cursor:pointer;min-width:84px;text-align:center;}
+      .bld-item{background:#2b3350;color:#fff;border:2px solid transparent;border-radius:8px;padding:8px;font-size:7px;cursor:pointer;min-width:84px;text-align:center;}
       .bld-item .p{color:#FFD700;display:block;margin-top:4px;}
       .bld-item.active{border-color:#7CFC9A;}
-      #bld-hint{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);background:rgba(0,0,0,.6);
-        color:#fff;font-size:7px;padding:6px 10px;border-radius:6px;pointer-events:none;}
-      #bld-toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#8B0000;color:#fff;
-        padding:9px 14px;border-radius:8px;font-size:8px;z-index:10090;display:none;font-family:'Press Start 2P',monospace;}
+      #bld-hint{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);background:rgba(0,0,0,.6);color:#fff;font-size:7px;padding:6px 10px;border-radius:6px;pointer-events:none;z-index:10081;}
+      #bld-toast{position:fixed;top:54px;left:50%;transform:translateX(-50%);background:#8B0000;color:#fff;padding:9px 14px;border-radius:8px;font-size:8px;z-index:10090;display:none;font-family:'Press Start 2P',monospace;}
     `;
     document.head.appendChild(css);
-
     const div = document.createElement("div");
     div.id = "mp-builder";
     div.innerHTML = `
@@ -1391,64 +1384,67 @@
         </div>
       </div>
       <div id="bld-palette"></div>
-      <div id="bld-hint">Arrows/WASD move · BUILD to place · click a tile · press X near your build to remove</div>`;
+      <div id="bld-hint">WASD/Arrows move · walk tall grass to find wild Pokemon · BUILD to place · X to remove your build</div>`;
     document.body.appendChild(div);
-
     const toast = document.createElement("div"); toast.id = "bld-toast"; document.body.appendChild(toast);
 
     B.canvas = document.getElementById("bld-canvas");
     B.ctx = B.canvas.getContext("2d");
     B.ctx.imageSmoothingEnabled = false;
 
-    // palette items
     const pal = document.getElementById("bld-palette");
     BUILD_CATALOG.forEach((c) => {
       const el = document.createElement("div");
-      el.className = "bld-item";
-      el.dataset.key = c.key;
+      el.className = "bld-item"; el.dataset.key = c.key;
       el.innerHTML = `${c.name}<span class="p">$${c.price}</span>`;
       el.onclick = () => { B.placeMode = c.key; updatePaletteActive(); bToast("Tap a tile to place " + c.name); };
       pal.appendChild(el);
     });
-
     document.getElementById("bld-build").onclick = () => {
       pal.classList.toggle("show");
       if (!pal.classList.contains("show")) { B.placeMode = null; updatePaletteActive(); }
     };
     document.getElementById("bld-ride").onclick = toggleRide;
     document.getElementById("bld-exit").onclick = closeBuilder;
-
-    // place on click / tap
     B.canvas.addEventListener("click", onBuilderClick);
-
-    // keyboard
     window.addEventListener("keydown", builderKeyDown);
     window.addEventListener("keyup", builderKeyUp);
   }
-
   function updatePaletteActive() {
-    document.querySelectorAll("#bld-palette .bld-item").forEach((el) =>
-      el.classList.toggle("active", el.dataset.key === B.placeMode));
+    document.querySelectorAll("#bld-palette .bld-item").forEach((el) => el.classList.toggle("active", el.dataset.key === B.placeMode));
   }
-  function bToast(m) {
-    const t = document.getElementById("bld-toast"); if (!t) return;
-    t.textContent = m; t.style.display = "block"; clearTimeout(t._tm); t._tm = setTimeout(() => t.style.display = "none", 2200);
-  }
+  function bToast(m) { const t = document.getElementById("bld-toast"); if (!t) return; t.textContent = m; t.style.display = "block"; clearTimeout(t._tm); t._tm = setTimeout(() => t.style.display = "none", 2200); }
   function bWallet() { try { return Math.max(0, Math.floor(Number(localStorage.getItem("pokemon_dino_wallet")) || 0)); } catch (e) { return 0; } }
   function bWalletSet(v) { try { localStorage.setItem("pokemon_dino_wallet", String(Math.max(0, Math.floor(v)))); } catch (e) {} }
   function refreshBWallet() { const el = document.getElementById("bld-wallet"); if (el) el.textContent = "$" + bWallet(); }
 
+  /* ---------- starter team so you can battle wild Pokemon ---------- */
+  function ensureBuilderParty() {
+    const G = window.G;
+    if (!G) return;
+    if (G.party && G.party.length && G.partner) return; // already have a team (e.g. from a journey)
+    const roster = window.POKEMON_ROSTER || [];
+    if (!roster.length || !window.battleCopy) return;
+    // give a mid-level starter so wild battles are winnable
+    const starter = window.battleCopy(roster[Math.floor(Math.random() * Math.min(3, roster.length))]);
+    starter.level = 50;
+    G.partner = starter; G.party = [starter]; G.partnerIdx = 0;
+    G.bag = G.bag || { potion: 3, pokeball: 5 };
+    if (typeof G.money !== "number") G.money = 0;
+    G._trainerParty = []; G._trainerPartyIdx = 0; G._defeatedOpponentLevels = [];
+  }
+
   /* ---------- open / close ---------- */
   function openBuilder() {
     buildBuilderDOM();
-    // ensure we have a websocket connection
-    if (!MP.connected) {
-      connect().then(() => doOpenBuilder()).catch(() => bToast("Can't reach server."));
-    } else doOpenBuilder();
+    if (!MP.connected) connect().then(doOpenBuilder).catch(() => bToast("Can't reach server."));
+    else doOpenBuilder();
   }
   function doOpenBuilder() {
-    B.on = true;
+    B.on = true; B.inBattle = false;
     B.player = { x: 0, y: 0, px: 0, py: 0, dir: "down", moving: false, vehicle: null, tx: 0, ty: 0, t: 1, fx: 0, fy: 0 };
+    if (window.G) { window.G.mode = "adventure"; window.G.worldPaused = false; }
+    ensureBuilderParty();
     document.getElementById("mp-builder").classList.add("show");
     refreshBWallet();
     MP.name = MP.name || "Builder";
@@ -1461,9 +1457,7 @@
     sendMsg("builder_leave", {});
     document.getElementById("mp-builder").classList.remove("show");
     if (B.raf) { cancelAnimationFrame(B.raf); B.raf = null; }
-    // back to title menu
-    const tm = document.getElementById("title-menu");
-    const ps = document.getElementById("press-start");
+    const tm = document.getElementById("title-menu"), ps = document.getElementById("press-start");
     if (window.show) window.show("title-screen");
     if (ps) ps.style.display = "none";
     if (tm) tm.style.display = "flex";
@@ -1471,7 +1465,7 @@
 
   /* ---------- input ---------- */
   function builderKeyDown(e) {
-    if (!B.on) return;
+    if (!B.on || B.inBattle) return;
     const k = e.key.toLowerCase();
     const map = { arrowup: "up", w: "up", arrowdown: "down", s: "down", arrowleft: "left", a: "left", arrowright: "right", d: "right" };
     if (map[k]) { B.held = map[k]; e.preventDefault(); }
@@ -1485,9 +1479,8 @@
     const map = { arrowup: "up", w: "up", arrowdown: "down", s: "down", arrowleft: "left", a: "left", arrowright: "right", d: "right" };
     if (map[k] === B.held) B.held = null;
   }
-
   function onBuilderClick(e) {
-    if (!B.on || !B.placeMode) return;
+    if (!B.on || B.inBattle || !B.placeMode) return;
     const rect = B.canvas.getBoundingClientRect();
     const cx = (e.clientX - rect.left) * (BVIEW_W / rect.width);
     const cy = (e.clientY - rect.top) * (BVIEW_H / rect.height);
@@ -1495,48 +1488,39 @@
     const wy = Math.floor((cy + B.cam.y) / BT);
     placeAt(wx, wy, B.placeMode);
   }
-
   function placeAt(x, y, key) {
     const c = catInfo(key); if (!c) return;
-    if (bWallet() < c.price) { bToast("Not enough money! ($" + c.price + ")"); return; }
-    // local optimistic deduction happens on server-confirm to stay in sync; deduct now & refund on error
+    if (bWallet() < c.price) { bToast("Not enough money! Battle wild Pokemon to earn $."); return; }
     bWalletSet(bWallet() - c.price); refreshBWallet();
     B._pendingCost = (B._pendingCost || 0) + c.price;
     sendMsg("builder_place", { objType: key, x, y });
   }
-
   function removeNearbyOwn() {
-    // remove your own object on/adjacent to your tile
     const px = Math.round(B.player.x), py = Math.round(B.player.y);
     let found = null;
-    for (const o of B.objects.values()) {
-      if (o.owner !== B.me) continue;
-      if (Math.abs(o.x - px) <= 1 && Math.abs(o.y - py) <= 1) { found = o; break; }
-    }
+    for (const o of B.objects.values()) { if (o.owner !== B.me) continue; if (Math.abs(o.x - px) <= 1 && Math.abs(o.y - py) <= 1) { found = o; break; } }
     if (found) sendMsg("builder_remove", { id: found.id });
     else bToast("Stand next to your own build, then press X.");
   }
-
   function toggleRide() {
     if (B.player.vehicle) { B.player.vehicle = null; bToast("Got off."); return; }
-    // find a vehicle you own on/near your tile
     const px = Math.round(B.player.x), py = Math.round(B.player.y);
     for (const o of B.objects.values()) {
-      if (VEHICLES[o.type] && Math.abs(o.x - px) <= 1 && Math.abs(o.y - py) <= 1) {
-        B.player.vehicle = o.type; bToast("Riding " + o.type + "! (E to get off)"); return;
-      }
+      if (VEHICLES[o.type] && Math.abs(o.x - px) <= 1 && Math.abs(o.y - py) <= 1) { B.player.vehicle = o.type; bToast("Riding " + o.type + "!"); return; }
     }
     bToast("Stand next to a vehicle you placed, then press RIDE.");
   }
 
-  /* ---------- movement + loop ---------- */
+  /* ---------- movement + wild battles ---------- */
   function builderStep() {
+    if (B.inBattle) return;
     const speed = B.player.vehicle ? (VEHICLES[B.player.vehicle] || 0.3) : 0.16;
     if (B.player.moving) {
       B.player.t += speed;
       if (B.player.t >= 1) {
         B.player.t = 1; B.player.x = B.player.tx; B.player.y = B.player.ty;
         B.player.px = B.player.x * BT; B.player.py = B.player.y * BT; B.player.moving = false;
+        onBuilderTileEnter();
       } else {
         B.player.px = (B.player.fx + (B.player.tx - B.player.fx) * B.player.t) * BT;
         B.player.py = (B.player.fy + (B.player.ty - B.player.fy) * B.player.t) * BT;
@@ -1545,39 +1529,57 @@
       const d = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[B.held];
       B.player.dir = B.held;
       const nx = B.player.x + d[0], ny = B.player.y + d[1];
-      if (canWalk(nx, ny)) {
-        B.player.fx = B.player.x; B.player.fy = B.player.y;
-        B.player.tx = nx; B.player.ty = ny; B.player.t = 0; B.player.moving = true;
-      }
+      if (canWalk(nx, ny)) { B.player.fx = B.player.x; B.player.fy = B.player.y; B.player.tx = nx; B.player.ty = ny; B.player.t = 0; B.player.moving = true; }
     }
   }
   function canWalk(x, y) {
-    // blocked by wild trees and by solid placed objects (buildings & trees)
     if (isWildTree(x, y)) return false;
-    for (const o of B.objects.values()) {
-      if (o.x === x && o.y === y && SOLID[o.type]) return false;
-    }
+    for (const o of B.objects.values()) { if (o.x === x && o.y === y && SOLID[o.type]) return false; }
     return true;
   }
-  const SOLID = { tree: 1, house: 1, mansion: 1, shop: 1, pool: 1 }; // land/flowers/fence/vehicles walkable
-
-  function builderLoop() {
-    B.frame++;
-    builderStep();
-    // peer interpolation
-    for (const [id, p] of B.peers) {
-      if (p.t < 1) { p.t = Math.min(1, p.t + 0.2); p.px = (p.fx + (p.tx - p.fx) * p.t) * BT; p.py = (p.fy + (p.ty - p.fy) * p.t) * BT; }
+  function onBuilderTileEnter() {
+    // wild encounter chance in tall grass (no vehicle), like the journey
+    B.stepsSinceBattle++;
+    if (B.player.vehicle) return;
+    if (isTallGrass(Math.round(B.player.x), Math.round(B.player.y)) && B.stepsSinceBattle > 3 && Math.random() < 0.18) {
+      B.stepsSinceBattle = 0;
+      startBuilderWildBattle();
     }
-    // camera centers on player
-    B.cam.x = B.player.px - BVIEW_W / 2 + BT / 2;
-    B.cam.y = B.player.py - BVIEW_H / 2 + BT / 2;
-    drawBuilder();
-    sendBuilderPos();
-    B.raf = requestAnimationFrame(builderLoop);
+  }
+  function startBuilderWildBattle() {
+    const G = window.G;
+    if (!G || !window.launchBattle || !window.battleCopy || !window.WILD_POKEMON) return;
+    ensureBuilderParty();
+    B.inBattle = true; B.held = null;
+    // pick a wild pokemon (Route 1 pool), modest levels so it's winnable
+    const pool = window.WILD_ROUTE1 || [16, 19, 10];
+    const wid = pool[Math.floor(Math.random() * pool.length)];
+    const base = window.WILD_POKEMON.find(p => p.id === wid) || window.WILD_POKEMON[0];
+    const enemy = window.battleCopy(base);
+    enemy.level = 30 + Math.floor(Math.random() * 25);
+    G.mode = "adventure";
+    G._trainerNPC = null; G._catchable = true; G._forceBattle = false;
+    G._trainerParty = []; G._trainerPartyIdx = 0; G._defeatedOpponentLevels = [];
+    G.partner.currentHp = G.partner.maxHp; // heal before each battle so it stays fun
+    // mark so our endBattle hook returns us to the builder
+    G._builderBattle = true;
+    window.launchBattle(window.battleCopy(G.partner), enemy, "adventure");
   }
 
+  /* ---------- loop + render (overworld graphics) ---------- */
+  function builderLoop() {
+    B.frame++;
+    if (!B.inBattle) {
+      builderStep();
+      for (const [id, p] of B.peers) { if (p.t < 1) { p.t = Math.min(1, p.t + 0.2); p.px = (p.fx + (p.tx - p.fx) * p.t) * BT; p.py = (p.fy + (p.ty - p.fy) * p.t) * BT; } }
+      B.cam.x = B.player.px - BVIEW_W / 2 + BT / 2;
+      B.cam.y = B.player.py - BVIEW_H / 2 + BT / 2;
+      drawBuilder();
+      sendBuilderPos();
+    }
+    B.raf = requestAnimationFrame(builderLoop);
+  }
   function sendBuilderPos() {
-    if (!B.connectedOnce && MP.connected) B.connectedOnce = true;
     const now = Date.now();
     const sig = [Math.round(B.player.x), Math.round(B.player.y), B.player.dir, B.player.moving, B.player.vehicle].join(",");
     if ((sig !== B.lastSig || now - B.lastSent > 1000) && now - B.lastSent > 80) {
@@ -1586,125 +1588,95 @@
     }
   }
 
-  /* ---------- rendering ---------- */
   function drawBuilder() {
     const ctx = B.ctx; if (!ctx) return;
-    ctx.fillStyle = "#3aa655"; ctx.fillRect(0, 0, BVIEW_W, BVIEW_H);
+    const T = window.T, drawTile = window.drawTile;
     const startX = Math.floor(B.cam.x / BT), startY = Math.floor(B.cam.y / BT);
-    const cols = Math.ceil(BVIEW_W / BT) + 2, rows = Math.ceil(BVIEW_H / BT) + 2;
-
-    // ground + grass texture + wild scatter
-    for (let ry = 0; ry < rows; ry++) for (let rx = 0; rx < cols; rx++) {
+    const offX = B.cam.x - startX * BT, offY = B.cam.y - startY * BT;
+    ctx.fillStyle = "#62a045"; ctx.fillRect(0, 0, BVIEW_W, BVIEW_H);
+    // ground using the GAME's drawTile (grass / tall grass), identical look
+    for (let ry = 0; ry <= BVIEW_H / BT; ry++) for (let rx = 0; rx <= BVIEW_W / BT; rx++) {
       const wx = startX + rx, wy = startY + ry;
-      const sx = wx * BT - B.cam.x, sy = wy * BT - B.cam.y;
-      // checker grass
-      ctx.fillStyle = ((wx + wy) & 1) ? "#3aa655" : "#34a04e";
-      ctx.fillRect(sx, sy, BT, BT);
-      if (isWildFlower(wx, wy)) { ctx.fillStyle = "#e573a0"; ctx.fillRect(sx + 9, sy + 9, 6, 6); }
+      const sx = rx * BT - offX, sy = ry * BT - offY;
+      let type = (T ? T.GRASS : 0);
+      if (T && isTallGrass(wx, wy)) type = T.TALL;
+      if (drawTile && T) drawTile(ctx, type, sx, sy, wx, wy, B.frame);
+      else { ctx.fillStyle = ((wx + wy) & 1) ? "#62a045" : "#5c9a40"; ctx.fillRect(sx, sy, BT, BT); }
     }
-
-    // placed objects (sorted by y for depth)
+    // placed objects (depth-sorted)
     const objs = [...B.objects.values()].sort((a, b) => a.y - b.y);
     for (const o of objs) drawObject(ctx, o, o.x * BT - B.cam.x, o.y * BT - B.cam.y);
-
-    // wild trees on top of ground (after objects so they overlap nicely)
-    for (let ry = 0; ry < rows; ry++) for (let rx = 0; rx < cols; rx++) {
+    // wild trees via the game's TREE tile (identical to overworld)
+    for (let ry = -1; ry <= BVIEW_H / BT + 1; ry++) for (let rx = -1; rx <= BVIEW_W / BT + 1; rx++) {
       const wx = startX + rx, wy = startY + ry;
-      if (isWildTree(wx, wy)) drawTree(ctx, wx * BT - B.cam.x, wy * BT - B.cam.y, "#1f6b2a");
+      if (isWildTree(wx, wy)) {
+        const sx = rx * BT - offX, sy = ry * BT - offY;
+        if (drawTile && T) drawTile(ctx, T.TREE, sx, sy, wx, wy, B.frame);
+      }
     }
-
-    // peers
-    for (const p of B.peers.values()) drawAvatar(ctx, p.px - B.cam.x, p.py - B.cam.y, p.dir, p.vehicle, p.name, "#ffcf6b");
-    // me
-    drawAvatar(ctx, B.player.px - B.cam.x, B.player.py - B.cam.y, B.player.dir, B.player.vehicle, "YOU", "#6cf0a0");
+    // peers (use 'oak' style? -> use same player art for consistency)
+    for (const p of B.peers.values()) drawCharAt(ctx, p.px - B.cam.x, p.py - B.cam.y, p.dir, p.moving, p.vehicle, p.name);
+    // me (uses getCharCanvas('player') -> reflects customization)
+    drawCharAt(ctx, B.player.px - B.cam.x, B.player.py - B.cam.y, B.player.dir, B.player.moving, B.player.vehicle, null);
   }
 
+  function drawCharAt(ctx, sx, sy, dir, moving, vehicle, name) {
+    if (vehicle) drawVehicle(ctx, sx, sy, vehicle, (catInfo(vehicle) || {}).color || "#888");
+    // shadow
+    ctx.fillStyle = "rgba(0,0,0,0.25)"; ctx.beginPath(); ctx.ellipse(sx + 8, sy + 14, 6, 2, 0, 0, Math.PI * 2); ctx.fill();
+    // SAME sprite as overworld
+    if (window.getCharCanvas) {
+      const frame = moving ? (1 + (Math.floor(B.frame / 5) % 2)) : 0;
+      const bob = moving ? ((Math.floor(B.frame / 5) % 2) ? 0 : -1) : 0;
+      let cv; try { cv = window.getCharCanvas("player", dir || "down", frame); } catch (e) { cv = null; }
+      if (cv) ctx.drawImage(cv, Math.round(sx), Math.round(sy - 4 + bob));
+    }
+    if (name) { ctx.font = "5px 'Press Start 2P',monospace"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(sx + 8 - name.length * 3 - 2, sy - 14, name.length * 6 + 4, 8); ctx.fillStyle = "#FFD700"; ctx.fillText(name.slice(0, 10), sx + 8, sy - 8); ctx.textAlign = "start"; }
+  }
   function drawObject(ctx, o, sx, sy) {
-    const c = catInfo(o.type);
-    const col = c ? c.color : "#888";
+    const c = catInfo(o.type); const col = c ? c.color : "#888";
     if (o.type === "land") { ctx.fillStyle = "rgba(202,161,90,0.55)"; ctx.fillRect(sx, sy, BT, BT); ctx.strokeStyle = "#a07b34"; ctx.strokeRect(sx + 0.5, sy + 0.5, BT - 1, BT - 1); return; }
-    if (o.type === "flower") { ctx.fillStyle = "#2e8b3a"; ctx.fillRect(sx + 2, sy + 2, BT - 4, BT - 4); ctx.fillStyle = col; for (let i = 0; i < 4; i++) ctx.fillRect(sx + 4 + (i % 2) * 9, sy + 4 + Math.floor(i / 2) * 9, 5, 5); return; }
-    if (o.type === "fence") { ctx.fillStyle = col; ctx.fillRect(sx + 2, sy + 8, BT - 4, 4); ctx.fillRect(sx + 4, sy + 4, 3, 14); ctx.fillRect(sx + BT - 7, sy + 4, 3, 14); return; }
-    if (o.type === "tree") { drawTree(ctx, sx, sy, col); return; }
+    if (o.type === "flower") { ctx.fillStyle = col; ctx.fillRect(sx + 3, sy + 3, 4, 4); ctx.fillRect(sx + 9, sy + 9, 4, 4); ctx.fillStyle = "#fff200"; ctx.fillRect(sx + 4, sy + 4, 1, 1); ctx.fillRect(sx + 10, sy + 10, 1, 1); return; }
+    if (o.type === "fence") { ctx.fillStyle = col; ctx.fillRect(sx + 1, sy + 6, BT - 2, 3); ctx.fillRect(sx + 3, sy + 3, 2, 10); ctx.fillRect(sx + BT - 5, sy + 3, 2, 10); return; }
+    if (o.type === "tree") { if (window.drawTile && window.T) window.drawTile(ctx, window.T.TREE, sx, sy, o.x, o.y, B.frame); return; }
     if (VEHICLES[o.type]) { drawVehicle(ctx, sx, sy, o.type, col); return; }
-    // buildings: house/mansion/shop/pool
     drawBuilding(ctx, sx, sy, o.type, col);
-    if (o.ownerName) { ctx.font = "6px 'Press Start 2P',monospace"; ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.textAlign = "center"; ctx.fillText(o.ownerName.slice(0, 8), sx + BT / 2, sy - 2); ctx.textAlign = "start"; }
-  }
-  function drawTree(ctx, sx, sy, col) {
-    ctx.fillStyle = "#6b4a2a"; ctx.fillRect(sx + BT / 2 - 2, sy + BT - 8, 4, 8);
-    ctx.fillStyle = col || "#1f6b2a"; ctx.beginPath(); ctx.arc(sx + BT / 2, sy + BT / 2, BT / 2 - 2, 0, Math.PI * 2); ctx.fill();
+    if (o.ownerName) { ctx.font = "5px 'Press Start 2P',monospace"; ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.textAlign = "center"; ctx.fillText(o.ownerName.slice(0, 8), sx + BT / 2, sy - 2); ctx.textAlign = "start"; }
   }
   function drawBuilding(ctx, sx, sy, type, col) {
-    const big = (type === "mansion");
-    const w = big ? BT * 2 : BT, h = big ? BT * 2 : BT;
-    ctx.fillStyle = col; ctx.fillRect(sx, sy + h * 0.35, w, h * 0.65);          // body
-    ctx.fillStyle = "#7a2d1c"; ctx.beginPath(); ctx.moveTo(sx - 2, sy + h * 0.4); ctx.lineTo(sx + w / 2, sy); ctx.lineTo(sx + w + 2, sy + h * 0.4); ctx.closePath(); ctx.fill(); // roof
-    ctx.fillStyle = "#3a2a18"; ctx.fillRect(sx + w / 2 - 4, sy + h - 9, 8, 9);   // door
-    ctx.fillStyle = "#bfe3ff"; ctx.fillRect(sx + 4, sy + h * 0.5, 5, 5);          // window
-    if (type === "pool") { ctx.fillStyle = "#39b6e0"; ctx.fillRect(sx + 3, sy + 3, BT - 6, BT - 6); ctx.strokeStyle = "#fff"; ctx.strokeRect(sx + 3.5, sy + 3.5, BT - 7, BT - 7); }
+    const big = (type === "mansion"); const w = big ? BT * 2 : BT, h = big ? BT * 2 : BT;
+    ctx.fillStyle = col; ctx.fillRect(sx, sy + h * 0.35, w, h * 0.65);
+    ctx.fillStyle = "#7a2d1c"; ctx.beginPath(); ctx.moveTo(sx - 1, sy + h * 0.4); ctx.lineTo(sx + w / 2, sy); ctx.lineTo(sx + w + 1, sy + h * 0.4); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#3a2a18"; ctx.fillRect(sx + w / 2 - 2, sy + h - 6, 5, 6);
+    ctx.fillStyle = "#bfe3ff"; ctx.fillRect(sx + 3, sy + h * 0.5, 3, 3);
+    if (type === "pool") { ctx.fillStyle = "#39b6e0"; ctx.fillRect(sx + 2, sy + 2, BT - 4, BT - 4); ctx.strokeStyle = "#fff"; ctx.strokeRect(sx + 2.5, sy + 2.5, BT - 5, BT - 5); }
   }
   function drawVehicle(ctx, sx, sy, type, col) {
-    if (type === "bike") { ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx + 7, sy + BT - 6, 4, 0, 7); ctx.arc(sx + BT - 7, sy + BT - 6, 4, 0, 7); ctx.stroke(); ctx.beginPath(); ctx.moveTo(sx + 7, sy + BT - 6); ctx.lineTo(sx + BT / 2, sy + 8); ctx.lineTo(sx + BT - 7, sy + BT - 6); ctx.stroke(); return; }
-    ctx.fillStyle = col; ctx.fillRect(sx + 2, sy + 8, BT - 4, BT - 14);
-    ctx.fillStyle = "#bfe3ff"; ctx.fillRect(sx + 5, sy + 10, BT - 10, 4);
-    ctx.fillStyle = "#222"; ctx.fillRect(sx + 4, sy + BT - 6, 4, 4); ctx.fillRect(sx + BT - 8, sy + BT - 6, 4, 4);
-  }
-  function drawAvatar(ctx, sx, sy, dir, vehicle, name, col) {
-    if (vehicle) { drawVehicle(ctx, sx, sy, vehicle, catInfo(vehicle).color); }
-    // shadow
-    ctx.fillStyle = "rgba(0,0,0,.2)"; ctx.beginPath(); ctx.ellipse(sx + BT / 2, sy + BT - 3, 7, 3, 0, 0, 7); ctx.fill();
-    // body
-    ctx.fillStyle = col; ctx.fillRect(sx + BT / 2 - 5, sy + 4, 10, 12);
-    ctx.fillStyle = "#f4c896"; ctx.fillRect(sx + BT / 2 - 4, sy, 8, 6); // head
-    // facing eyes
-    ctx.fillStyle = "#222";
-    if (dir === "down") { ctx.fillRect(sx + BT / 2 - 3, sy + 2, 2, 2); ctx.fillRect(sx + BT / 2 + 1, sy + 2, 2, 2); }
-    else if (dir === "up") { /* back of head */ }
-    else if (dir === "left") { ctx.fillRect(sx + BT / 2 - 3, sy + 2, 2, 2); }
-    else { ctx.fillRect(sx + BT / 2 + 1, sy + 2, 2, 2); }
-    if (name) { ctx.font = "6px 'Press Start 2P',monospace"; ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.fillText(name.slice(0, 8), sx + BT / 2, sy - 3); ctx.textAlign = "start"; }
+    if (type === "bike") { ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(sx + 5, sy + BT - 4, 3, 0, 7); ctx.arc(sx + BT - 5, sy + BT - 4, 3, 0, 7); ctx.stroke(); return; }
+    ctx.fillStyle = col; ctx.fillRect(sx + 2, sy + 6, BT - 4, BT - 10);
+    ctx.fillStyle = "#bfe3ff"; ctx.fillRect(sx + 4, sy + 7, BT - 8, 3);
+    ctx.fillStyle = "#222"; ctx.fillRect(sx + 3, sy + BT - 5, 3, 3); ctx.fillRect(sx + BT - 6, sy + BT - 5, 3, 3);
   }
 
-  /* ---------- network handlers (called from handle()) ---------- */
+  /* ---------- network ---------- */
   function builderHandle(msg) {
     switch (msg.type) {
       case "builder_init":
-        B.me = msg.you;
-        B.objects.clear();
-        (msg.objects || []).forEach((o) => B.objects.set(o.id, o));
-        B.peers.clear();
-        (msg.peers || []).forEach((p) => B.peers.set(p.id, mkPeer(p)));
-        return true;
+        B.me = msg.you; B.objects.clear(); (msg.objects || []).forEach((o) => B.objects.set(o.id, o));
+        B.peers.clear(); (msg.peers || []).forEach((p) => B.peers.set(p.id, mkPeer(p))); return true;
       case "builder_peer_join":
-        if (msg.id !== B.me) B.peers.set(msg.id, mkPeer({ id: msg.id, name: msg.name, x: 0, y: 0, dir: "down" }));
-        return true;
-      case "builder_peer_left":
-        B.peers.delete(msg.id);
-        return true;
+        if (msg.id !== B.me) B.peers.set(msg.id, mkPeer({ id: msg.id, name: msg.name, x: 0, y: 0, dir: "down" })); return true;
+      case "builder_peer_left": B.peers.delete(msg.id); return true;
       case "builder_peer_pos": {
         if (msg.id === B.me) return true;
-        let p = B.peers.get(msg.id);
-        if (!p) { p = mkPeer(msg); B.peers.set(msg.id, p); }
+        let p = B.peers.get(msg.id); if (!p) { p = mkPeer(msg); B.peers.set(msg.id, p); }
         p.name = msg.name || p.name; p.dir = msg.dir; p.moving = msg.moving; p.vehicle = msg.vehicle;
-        p.fx = p.px / BT; p.fy = p.py / BT; p.tx = msg.x; p.ty = msg.y; p.t = 0;
-        return true;
+        p.fx = p.px / BT; p.fy = p.py / BT; p.tx = msg.x; p.ty = msg.y; p.t = 0; return true;
       }
-      case "builder_placed":
-        B.objects.set(msg.obj.id, msg.obj);
-        if (msg.obj.owner === B.me) { B._pendingCost = 0; bToast(catInfo(msg.obj.type).name + " placed!"); }
-        return true;
-      case "builder_removed":
-        B.objects.delete(msg.id);
-        return true;
-      case "builder_error":
-        // refund optimistic deduction
-        if (B._pendingCost) { bWalletSet(bWallet() + B._pendingCost); B._pendingCost = 0; refreshBWallet(); }
-        bToast(msg.message || "Build error");
-        return true;
-      case "builder_chat":
-        bToast((msg.name || "?") + ": " + msg.text);
-        return true;
+      case "builder_placed": B.objects.set(msg.obj.id, msg.obj); if (msg.obj.owner === B.me) { B._pendingCost = 0; bToast(catInfo(msg.obj.type).name + " placed!"); } return true;
+      case "builder_removed": B.objects.delete(msg.id); return true;
+      case "builder_error": if (B._pendingCost) { bWalletSet(bWallet() + B._pendingCost); B._pendingCost = 0; refreshBWallet(); } bToast(msg.message || "Build error"); return true;
+      case "builder_chat": bToast((msg.name || "?") + ": " + msg.text); return true;
     }
     return false;
   }
@@ -1713,10 +1685,21 @@
       x: p.x || 0, y: p.y || 0, px: (p.x || 0) * BT, py: (p.y || 0) * BT, tx: p.x || 0, ty: p.y || 0, fx: p.x || 0, fy: p.y || 0, t: 1 };
   }
 
-  // expose entry points on MP
+  // Called by the endBattle hook when a builder wild battle finishes.
+  function builderReturnFromBattle() {
+    B.inBattle = false;
+    refreshBWallet(); // winnings were banked by the game's endBattle -> bankWardrobeMoney
+    // hide the journey world UI the battle switched to, re-show builder
+    ["world-screen", "battle-screen", "result-screen"].forEach((s) => { const el = document.getElementById(s); if (el) el.style.display = "none"; });
+    const ov = document.getElementById("mp-builder"); if (ov) ov.classList.add("show");
+    if (window.G) window.G.worldPaused = false;
+  }
+
   MP.openBuilder = openBuilder;
   MP.closeBuilder = closeBuilder;
   MP._builderHandle = builderHandle;
+  MP._builderReturnFromBattle = builderReturnFromBattle;
+  MP._inBuilderBattle = () => B.on && B.inBattle;
 
   function init() {
     injectStyles();
@@ -1731,6 +1714,26 @@
     requestAnimationFrame(syncLoop);
     // try to hook render early (and keep trying until renderWorld exists)
     const h = setInterval(() => { if (hookRender()) clearInterval(h); }, 200);
+    // hook endBattle so builder wild battles return to the builder world
+    const h2 = setInterval(() => { if (hookEndBattle()) clearInterval(h2); }, 200);
+  }
+
+  // Wrap the game's endBattle: if it was a builder wild battle, return to builder.
+  function hookEndBattle() {
+    if (typeof window.endBattle !== "function") return false;
+    if (window.__mpEndBattleHooked) return true;
+    const orig = window.endBattle;
+    window.endBattle = function () {
+      const wasBuilder = window.G && window.G._builderBattle;
+      const r = orig.apply(this, arguments);
+      if (wasBuilder) {
+        window.G._builderBattle = false;
+        try { if (MP._builderReturnFromBattle) setTimeout(MP._builderReturnFromBattle, 50); } catch (e) {}
+      }
+      return r;
+    };
+    window.__mpEndBattleHooked = true;
+    return true;
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

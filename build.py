@@ -30,6 +30,15 @@ try {
   if (typeof SPRITE_ANIM !== 'undefined') window.SPRITE_ANIM = SPRITE_ANIM;
   if (typeof SPRITE_BACK_ANIM !== 'undefined') window.SPRITE_BACK_ANIM = SPRITE_BACK_ANIM;
   if (typeof ITEM_DEFS !== 'undefined') window.ITEM_DEFS = ITEM_DEFS;
+  if (typeof drawTile !== 'undefined') window.drawTile = drawTile;
+  if (typeof T !== 'undefined') window.T = T;
+  if (typeof POKEMON_ROSTER !== 'undefined') window.POKEMON_ROSTER = POKEMON_ROSTER;
+  if (typeof WILD_POKEMON !== 'undefined') window.WILD_POKEMON = WILD_POKEMON;
+  if (typeof WILD_ROUTE1 !== 'undefined') window.WILD_ROUTE1 = WILD_ROUTE1;
+  if (typeof battleCopy !== 'undefined') window.battleCopy = battleCopy;
+  if (typeof launchBattle !== 'undefined') window.launchBattle = launchBattle;
+  if (typeof endBattle !== 'undefined') window.endBattle = endBattle;
+  if (typeof bankWardrobeMoney !== 'undefined') window.bankWardrobeMoney = bankWardrobeMoney;
   (function syncGlobals(){
     try {
       if (typeof G !== 'undefined') window.G = G;
