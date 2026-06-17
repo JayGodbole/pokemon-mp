@@ -44,28 +44,52 @@ function loadBuilder() {
     console.log("Builder profiles loaded:", profiles.size);
   } catch { /* no file yet */ }
 }
+// ---- immediate (synchronous) writers ----
+function writeBuilderNow() {
+  try {
+    fs.writeFileSync(BUILDER_FILE, JSON.stringify({ objects: builder.objects, cleared: builder.cleared, nextObjId: builder.nextObjId }));
+    return true;
+  } catch (e) { console.warn("Builder save failed:", e.message); return false; }
+}
+function writeProfilesNow() {
+  try {
+    const obj = {}; for (const [k, v] of profiles) obj[k] = v;
+    fs.writeFileSync(PROFILE_FILE, JSON.stringify(obj));
+    return true;
+  } catch (e) { console.warn("Profile save failed:", e.message); return false; }
+}
+// ---- debounced writers (used on each change) ----
 let _saveTimer = null;
 function saveBuilderSoon() {
   if (_saveTimer) return;
-  _saveTimer = setTimeout(() => {
-    _saveTimer = null;
-    try {
-      fs.writeFileSync(BUILDER_FILE, JSON.stringify({ objects: builder.objects, cleared: builder.cleared, nextObjId: builder.nextObjId }));
-    } catch (e) { console.warn("Builder save failed:", e.message); }
-  }, 1200);
+  _saveTimer = setTimeout(() => { _saveTimer = null; writeBuilderNow(); }, 1200);
 }
 let _profTimer = null;
 function saveProfilesSoon() {
   if (_profTimer) return;
-  _profTimer = setTimeout(() => {
-    _profTimer = null;
-    try {
-      const obj = {}; for (const [k, v] of profiles) obj[k] = v;
-      fs.writeFileSync(PROFILE_FILE, JSON.stringify(obj));
-    } catch (e) { console.warn("Profile save failed:", e.message); }
-  }, 1200);
+  _profTimer = setTimeout(() => { _profTimer = null; writeProfilesNow(); }, 1200);
+}
+function saveAllNow(reason) {
+  const a = writeBuilderNow(), b = writeProfilesNow();
+  if (reason) console.log("Saved world+profiles (" + reason + "):", builder.objects.length, "objects,", profiles.size, "profiles");
+  return a && b;
 }
 loadBuilder();
+
+// ---- AUTOSAVE: force a full save every 60 seconds so the shared world & all
+//      player progress are never lost (even on a sudden crash). ----
+setInterval(() => saveAllNow("autosave/60s"), 60000);
+
+// ---- save on shutdown (Ctrl-C / host stop / restart) ----
+let _shuttingDown = false;
+function gracefulExit(sig) {
+  if (_shuttingDown) return; _shuttingDown = true;
+  saveAllNow("shutdown:" + sig);
+  process.exit(0);
+}
+process.on("SIGINT", () => gracefulExit("SIGINT"));
+process.on("SIGTERM", () => gracefulExit("SIGTERM"));
+process.on("beforeExit", () => saveAllNow("beforeExit"));
 
 function builderBroadcast(type, payload = {}, exceptId = null) {
   for (const [pid, c] of builder.clients) {
@@ -580,21 +604,25 @@ wss.on("connection", (ws) => {
     }
   });
 
+  const onBuilderDisconnect = () => {
+    if (!builder.clients.has(ws.playerId)) return;
+    // persist this player's last position into their profile, then save everything now
+    const c = builder.clients.get(ws.playerId);
+    const prof = profiles.get(ws.builderProfileKey);
+    if (prof && c) prof.pos = { x: c.pos.x, y: c.pos.y };
+    builder.clients.delete(ws.playerId);
+    builderBroadcast("builder_peer_left", { id: ws.playerId });
+    saveAllNow("player-left:" + (c && c.name));
+  };
   ws.on("close", () => {
     const room = rooms.get(ws.roomCode);
     if (room) removePlayer(room, ws.playerId);
-    if (builder.clients.has(ws.playerId)) {
-      builder.clients.delete(ws.playerId);
-      builderBroadcast("builder_peer_left", { id: ws.playerId });
-    }
+    onBuilderDisconnect();
   });
   ws.on("error", () => {
     const room = rooms.get(ws.roomCode);
     if (room) removePlayer(room, ws.playerId);
-    if (builder.clients.has(ws.playerId)) {
-      builder.clients.delete(ws.playerId);
-      builderBroadcast("builder_peer_left", { id: ws.playerId });
-    }
+    onBuilderDisconnect();
   });
 });
 

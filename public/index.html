@@ -6018,11 +6018,7 @@ try {
     { key: "flower",     name: "Flowerbed",  price: 80,  color: "#e573a0", cat: "Decor" },
     { key: "tree",       name: "Tree",       price: 100, color: "#2e7d32", cat: "Decor" },
     { key: "sign",       name: "Sign",       price: 50,  color: "#caa46a", cat: "Decor", rotatable: true },
-    // --- prefab whole structures ---
-    { key: "house",      name: "House",      price: 3000, color: "#d9a066", cat: "Prefab" },
-    { key: "mansion",    name: "Mansion",    price: 12000,color: "#c9b59a", cat: "Prefab" },
-    { key: "shop",       name: "Shop",       price: 6000, color: "#e0c27a", cat: "Prefab" },
-    { key: "pool",       name: "Pool",       price: 4000, color: "#39b6e0", cat: "Prefab" },
+    // (prefab whole structures removed — build piece-by-piece from parts instead)
     // --- vehicles ---
     { key: "car",        name: "Car",        price: 8000, color: "#d83838", cat: "Vehicle" },
     { key: "bike",       name: "Bike",       price: 1500, color: "#2f6cc4", cat: "Vehicle" },
@@ -6189,6 +6185,11 @@ try {
     B.canvas.addEventListener("click", onBuilderClick);
     window.addEventListener("keydown", builderKeyDown);
     window.addEventListener("keyup", builderKeyUp);
+    // Save progress to the server when the tab closes / computer shuts down.
+    const flushOnLeave = () => { if (B.on) { try { saveBuilderProgress(true); } catch (e) {} } };
+    window.addEventListener("beforeunload", flushOnLeave);
+    window.addEventListener("pagehide", flushOnLeave);
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushOnLeave(); });
   }
   function updatePaletteActive() {
     document.querySelectorAll("#bld-palette .bld-item").forEach((el) => el.classList.toggle("active", el.dataset.key === B.placeMode));
