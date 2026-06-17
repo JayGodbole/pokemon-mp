@@ -26,7 +26,10 @@
   #title-screen h1 { color:#FFD700; font-size:22px; text-shadow:3px 3px 0 #333; z-index:1; margin-bottom:6px; letter-spacing:2px; }
   #title-screen h2 { color:#fff; font-size:10px; z-index:1; margin-bottom:30px; }
   @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0;} }
-  #title-menu { display:none; flex-direction:column; gap:12px; z-index:2; align-items:center; }
+  #title-menu { display:none; flex-direction:column; gap:12px; z-index:2; align-items:center; max-height:78%; overflow-y:auto; overflow-x:hidden; padding:6px 4px; width:270px; }
+  #title-menu::-webkit-scrollbar { width:8px; }
+  #title-menu::-webkit-scrollbar-thumb { background:#FFD700; border-radius:4px; }
+  #title-menu::-webkit-scrollbar-track { background:rgba(255,255,255,0.08); }
   .title-btn { background:#FFD700; color:#111; border:none; padding:12px 26px; font-family:'Press Start 2P',monospace; font-size:11px; cursor:pointer; border-radius:6px; width:240px; box-shadow:0 4px 0 #b8860b; transition:transform .05s; }
   .title-btn:hover { background:#FFF176; transform:translateY(-2px); box-shadow:0 6px 0 #b8860b; }
   .title-btn:active { transform:translateY(2px); box-shadow:0 1px 0 #b8860b; }
@@ -80,6 +83,8 @@
   #world-save-btn:hover{background:#66BB6A;}
   #world-export-btn { position:absolute; bottom:6px; right:200px; z-index:9; background:#fff; color:#111; border:2px solid #888; font-family:'Press Start 2P',monospace; font-size:8px; padding:5px 9px; border-radius:4px; cursor:pointer; }
   #world-export-btn:hover{background:#f0f0f0;}
+  #world-exit-btn { position:absolute; top:6px; right:8px; z-index:9; background:#8B0000; color:#fff; border:2px solid #5a0000; font-family:'Press Start 2P',monospace; font-size:8px; padding:5px 9px; border-radius:4px; cursor:pointer; }
+  #world-exit-btn:hover{background:#b71c1c;}
   #world-msgbox { position:absolute; bottom:0; left:0; right:0; height:80px; background:#f8f8d8; border-top:4px solid #484848; padding:10px 14px; z-index:20; display:none; }
   #world-msgbox .wm-text { color:#222; font-size:10px; line-height:1.7; }
   #world-msgbox .wm-cursor { display:inline-block; width:7px; height:7px; background:#222; animation:blink .6s infinite; vertical-align:middle; margin-left:4px; }
@@ -286,6 +291,7 @@
           <button class="title-btn" id="btn-new-journey">NEW JOURNEY</button>
           <button class="title-btn alt" id="btn-load-file">LOAD SAVE FILE</button>
           <button class="title-btn alt" id="btn-customize">CUSTOMIZE</button>
+          <button class="title-btn" id="btn-builder" style="background:linear-gradient(135deg,#43a047,#8bc34a);color:#fff;box-shadow:0 4px 0 #2e7d32;">🏗️ BUILDER MODE</button>
           <button class="title-btn alt" id="btn-battle">POKEMON BATTLE</button>
           <input type="file" id="save-file-input" accept=".json" style="display:none;">
         </div>
@@ -319,6 +325,7 @@
         <div id="dex-label" class="world-hud" style="top:6px;left:50%;transform:translateX(-50%);color:#fff;font-size:8px;text-shadow:1px 1px 0 #000;background:rgba(0,0,0,0.45);padding:4px 8px;border-radius:4px;">DEX: 1  |  000</div>
         <div id="partner-chip" class="world-hud"><img id="chip-img" src=""><div class="pc-info"><div class="pc-name" id="chip-name">???</div><div class="mini-hp-bg"><div class="mini-hp-bar" id="chip-hp"></div></div></div></div>
         <div id="hint-label" class="world-hud">ARROWS/WASD: MOVE &nbsp; SPACE: TALK</div>
+        <button id="world-exit-btn">✕ EXIT</button>
         <button id="world-bag-btn">BAG</button>
         <button id="world-party-btn">PARTY</button>
         <button id="world-save-btn">SAVE</button>
@@ -1005,6 +1012,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('btn-new-journey').addEventListener('click',openPartnerSelect);
   document.getElementById('btn-load-file').addEventListener('click',()=>document.getElementById('save-file-input').click());
   document.getElementById('btn-customize').addEventListener('click',openCustomizeShop);
+  document.getElementById('btn-builder').addEventListener('click',()=>{ if(window.MP&&window.MP.openBuilder) window.MP.openBuilder(); else alert('Builder mode is loading… try again in a moment.'); });
   document.getElementById('save-file-input').addEventListener('change',onLoadFile);
   document.getElementById('btn-battle').addEventListener('click',openBattleSelect);
   document.getElementById('start-battle-btn').addEventListener('click',beginBattle2P);
@@ -1013,6 +1021,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('world-party-btn').addEventListener('click',openWorldParty);
   document.getElementById('world-save-btn').addEventListener('click',saveGame);
   document.getElementById('world-export-btn').addEventListener('click',exportSaveFile);
+  document.getElementById('world-exit-btn').addEventListener('click',exitToMenu);
   // global text advancement
   document.getElementById('game-screen').addEventListener('click',()=>{ if(textActive) advanceText(); else if(worldMsgActive) advanceWorldMsg(); });
   document.addEventListener('keydown',onGlobalKey);
@@ -2222,6 +2231,22 @@ function resetGame(){
   document.getElementById('start-battle-btn').style.display='none';
 }
 
+/* Exit the current game and drop back to the title menu (menu already revealed). */
+function exitToMenu(){
+  if(!confirm('Exit to the main menu? Unsaved progress will be lost (use SAVE first).')) return;
+  G.worldPaused = true; G.heldDir = null;
+  // hide gameplay screens
+  ['world-screen','battle-screen','result-screen','select-screen','partner-screen'].forEach(s=>{
+    const el=document.getElementById(s); if(el) el.style.display='none';
+  });
+  // close any overlays
+  ['bag-overlay','party-overlay','world-msgbox'].forEach(s=>{ const el=document.getElementById(s); if(el) el.style.display='none'; });
+  if(window.MP && window.MP.closeBuilder) { try{ window.MP.closeBuilder(); }catch(e){} }
+  show('title-screen');
+  document.getElementById('press-start').style.display='none';
+  document.getElementById('title-menu').style.display='flex'; // keep menu open, skip CLICK TO START
+}
+
 /* ============================================================
    WORLD: MAP, TILES, RENDER, INPUT, ENCOUNTERS
    ============================================================ */
@@ -2538,7 +2563,7 @@ function buildWorld(){
   // NPCs
   World.npcs=[
     // Pewter City
-    { cfg:'uncle', name:'UNCLE', tileX:9, tileY:7, dir:'down',
+    { cfg:'uncle', name:'UNCLE', tileX:9, tileY:9, dir:'down',
       line:"Hey there, young trainer! How's your Pokemon journey going?",
       multiDialog:true },
     { cfg:'oak', name:'GYM GUIDE', tileX:24, tileY:13, dir:'right',
@@ -3429,12 +3454,14 @@ function exitCave(){
     _charCache = {};
     World.map=G._savedWorld.map; World.W=G._savedWorld.W; World.H=G._savedWorld.H;
     World.signs=G._savedWorld.signs; World.npcs=G._savedWorld.npcs; World.centerDoor=G._savedWorld.centerDoor;
-    G.player.tileX=G._savedPlayerPos.x; G.player.tileY=G._savedPlayerPos.y;
+    // Always spawn directly in FRONT of the Mystery Cave entrance (entrance is at 75,10;
+    // the walkable tile right below it is 75,11), facing up toward the cave.
+    G.player.tileX=75; G.player.tileY=11;
     G.player.px=G.player.tileX*TILE; G.player.py=G.player.tileY*TILE;
     G.player.fx=G.player.tileX; G.player.fy=G.player.tileY;
     G.player.tx=G.player.tileX; G.player.ty=G.player.tileY;
     G.player.t=0;
-    G.player.dir='down'; G.player.moving=false; 
+    G.player.dir='up'; G.player.moving=false;
     G._inCave=false;
     barTop.style.transition='height 0.35s ease-out'; barBot.style.transition='height 0.35s ease-out';
     requestAnimationFrame(()=>{ barTop.style.height='0'; barBot.style.height='0'; });
@@ -4977,6 +5004,10 @@ try {
   }
 
   function handle(msg) {
+    // builder-mode messages are handled by the builder module
+    if (typeof msg.type === "string" && msg.type.indexOf("builder_") === 0) {
+      if (MP._builderHandle && MP._builderHandle(msg)) return;
+    }
     switch (msg.type) {
       case "joined":
         MP.me = msg.you; MP.isHost = !!msg.host; MP.code = msg.code;
@@ -5922,6 +5953,428 @@ try {
     // re-apply when switching between world/battle (sizes can change)
     setInterval(apply, 1500);
   }
+
+
+  /* ============================================================
+     BUILDER MODE  (global shared, persisted, endless world)
+     - Endless procedurally-generated grass world with scattered trees.
+     - Buy land tiles, place houses/decor, buy & ride vehicles.
+     - Everyone spawns at (0,0) and sees each other live.
+     - Spends from the persistent wallet (pokemon_dino_wallet).
+     ============================================================ */
+  const B = {
+    on: false,
+    canvas: null, ctx: null, raf: null,
+    me: null,
+    cam: { x: 0, y: 0 },
+    player: { x: 0, y: 0, px: 0, py: 0, dir: "down", moving: false, vehicle: null, tx: 0, ty: 0, t: 1, fx: 0, fy: 0 },
+    held: null,
+    peers: new Map(),      // id -> {name,x,y,dir,moving,vehicle,px,py,...}
+    objects: new Map(),    // id -> {id,owner,ownerName,type,x,y}
+    placeMode: null,       // a catalog key when in "place" mode
+    lastSent: 0, lastSig: "",
+    frame: 0,
+  };
+  const BT = 24;           // builder tile size (px, internal)
+  const BVIEW_W = 640, BVIEW_H = 420;
+
+  // Catalog of buildable things (price from wallet).
+  const BUILD_CATALOG = [
+    { key: "land",     name: "Land Plot",   price: 500,   cat: "land",    color: "#caa15a" },
+    { key: "tree",     name: "Tree",        price: 100,   cat: "decor",   color: "#2e7d32" },
+    { key: "flower",   name: "Flowerbed",   price: 80,    cat: "decor",   color: "#e573a0" },
+    { key: "fence",    name: "Fence",       price: 60,    cat: "decor",   color: "#b08850" },
+    { key: "house",    name: "House",       price: 3000,  cat: "build",   color: "#c0563a" },
+    { key: "mansion",  name: "Mansion",     price: 12000, cat: "build",   color: "#9c6ad6" },
+    { key: "shop",     name: "Shop",        price: 6000,  cat: "build",   color: "#3a8ac0" },
+    { key: "pool",     name: "Pool",        price: 4000,  cat: "build",   color: "#39b6e0" },
+    { key: "car",      name: "Car",         price: 8000,  cat: "vehicle", color: "#d83838" },
+    { key: "bike",     name: "Bike",        price: 1500,  cat: "vehicle", color: "#2f6cc4" },
+    { key: "boat",     name: "Boat",        price: 10000, cat: "vehicle", color: "#8d6e63" },
+  ];
+  const catInfo = (k) => BUILD_CATALOG.find((c) => c.key === k);
+  const VEHICLES = { car: 0.34, bike: 0.26, boat: 0.30 }; // move speed per tick when riding
+
+  // deterministic pseudo-random for endless tree scatter
+  function hash2(x, y) {
+    let h = (x * 374761393 + y * 668265263) ^ 0x5bd1e995;
+    h = (h ^ (h >> 13)) * 1274126177;
+    return ((h ^ (h >> 16)) >>> 0) / 4294967295;
+  }
+  function isWildTree(x, y) { return hash2(x, y) < 0.07; }       // ~7% trees
+  function isWildFlower(x, y) { return hash2(x + 9999, y - 9999) < 0.04; }
+
+  /* ---------- DOM ---------- */
+  function buildBuilderDOM() {
+    if (document.getElementById("mp-builder")) return;
+    const css = document.createElement("style");
+    css.textContent = `
+      #mp-builder{position:fixed;inset:0;z-index:10080;background:#1a1a2e;display:none;
+        flex-direction:column;font-family:'Press Start 2P',monospace;}
+      #mp-builder.show{display:flex;}
+      #bld-canvas{flex:1;width:100%;height:100%;image-rendering:pixelated;display:block;background:#3aa655;}
+      #bld-hud{position:absolute;top:8px;left:8px;right:8px;display:flex;justify-content:space-between;
+        align-items:flex-start;pointer-events:none;}
+      #bld-wallet{background:rgba(15,24,48,.9);color:#7CFC9A;border:2px solid #FFD700;border-radius:8px;
+        padding:8px 12px;font-size:9px;pointer-events:auto;}
+      #bld-top-right{display:flex;gap:6px;pointer-events:auto;}
+      .bld-btn{background:#FFD700;color:#111;border:none;border-radius:8px;padding:8px 11px;font-size:8px;
+        font-family:'Press Start 2P',monospace;cursor:pointer;box-shadow:0 3px 0 #b8860b;}
+      .bld-btn.red{background:#8B0000;color:#fff;box-shadow:0 3px 0 #5a0000;}
+      .bld-btn.blue{background:#4fc3f7;color:#062a3a;box-shadow:0 3px 0 #0277bd;}
+      #bld-palette{position:absolute;left:8px;bottom:8px;right:8px;display:none;flex-wrap:wrap;gap:6px;
+        background:rgba(15,24,48,.92);border:2px solid #FFD700;border-radius:10px;padding:8px;max-height:34vh;overflow:auto;}
+      #bld-palette.show{display:flex;}
+      .bld-item{background:#2b3350;color:#fff;border:2px solid transparent;border-radius:8px;padding:8px;
+        font-size:7px;cursor:pointer;min-width:84px;text-align:center;}
+      .bld-item .p{color:#FFD700;display:block;margin-top:4px;}
+      .bld-item.active{border-color:#7CFC9A;}
+      #bld-hint{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);background:rgba(0,0,0,.6);
+        color:#fff;font-size:7px;padding:6px 10px;border-radius:6px;pointer-events:none;}
+      #bld-toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#8B0000;color:#fff;
+        padding:9px 14px;border-radius:8px;font-size:8px;z-index:10090;display:none;font-family:'Press Start 2P',monospace;}
+    `;
+    document.head.appendChild(css);
+
+    const div = document.createElement("div");
+    div.id = "mp-builder";
+    div.innerHTML = `
+      <canvas id="bld-canvas" width="${BVIEW_W}" height="${BVIEW_H}"></canvas>
+      <div id="bld-hud">
+        <div id="bld-wallet">$0</div>
+        <div id="bld-top-right">
+          <button class="bld-btn" id="bld-build">🏗️ BUILD</button>
+          <button class="bld-btn blue" id="bld-ride">🚗 RIDE/OFF</button>
+          <button class="bld-btn red" id="bld-exit">✕ EXIT</button>
+        </div>
+      </div>
+      <div id="bld-palette"></div>
+      <div id="bld-hint">Arrows/WASD move · BUILD to place · click a tile · press X near your build to remove</div>`;
+    document.body.appendChild(div);
+
+    const toast = document.createElement("div"); toast.id = "bld-toast"; document.body.appendChild(toast);
+
+    B.canvas = document.getElementById("bld-canvas");
+    B.ctx = B.canvas.getContext("2d");
+    B.ctx.imageSmoothingEnabled = false;
+
+    // palette items
+    const pal = document.getElementById("bld-palette");
+    BUILD_CATALOG.forEach((c) => {
+      const el = document.createElement("div");
+      el.className = "bld-item";
+      el.dataset.key = c.key;
+      el.innerHTML = `${c.name}<span class="p">$${c.price}</span>`;
+      el.onclick = () => { B.placeMode = c.key; updatePaletteActive(); bToast("Tap a tile to place " + c.name); };
+      pal.appendChild(el);
+    });
+
+    document.getElementById("bld-build").onclick = () => {
+      pal.classList.toggle("show");
+      if (!pal.classList.contains("show")) { B.placeMode = null; updatePaletteActive(); }
+    };
+    document.getElementById("bld-ride").onclick = toggleRide;
+    document.getElementById("bld-exit").onclick = closeBuilder;
+
+    // place on click / tap
+    B.canvas.addEventListener("click", onBuilderClick);
+
+    // keyboard
+    window.addEventListener("keydown", builderKeyDown);
+    window.addEventListener("keyup", builderKeyUp);
+  }
+
+  function updatePaletteActive() {
+    document.querySelectorAll("#bld-palette .bld-item").forEach((el) =>
+      el.classList.toggle("active", el.dataset.key === B.placeMode));
+  }
+  function bToast(m) {
+    const t = document.getElementById("bld-toast"); if (!t) return;
+    t.textContent = m; t.style.display = "block"; clearTimeout(t._tm); t._tm = setTimeout(() => t.style.display = "none", 2200);
+  }
+  function bWallet() { try { return Math.max(0, Math.floor(Number(localStorage.getItem("pokemon_dino_wallet")) || 0)); } catch (e) { return 0; } }
+  function bWalletSet(v) { try { localStorage.setItem("pokemon_dino_wallet", String(Math.max(0, Math.floor(v)))); } catch (e) {} }
+  function refreshBWallet() { const el = document.getElementById("bld-wallet"); if (el) el.textContent = "$" + bWallet(); }
+
+  /* ---------- open / close ---------- */
+  function openBuilder() {
+    buildBuilderDOM();
+    // ensure we have a websocket connection
+    if (!MP.connected) {
+      connect().then(() => doOpenBuilder()).catch(() => bToast("Can't reach server."));
+    } else doOpenBuilder();
+  }
+  function doOpenBuilder() {
+    B.on = true;
+    B.player = { x: 0, y: 0, px: 0, py: 0, dir: "down", moving: false, vehicle: null, tx: 0, ty: 0, t: 1, fx: 0, fy: 0 };
+    document.getElementById("mp-builder").classList.add("show");
+    refreshBWallet();
+    MP.name = MP.name || "Builder";
+    sendMsg("builder_join", { name: MP.name });
+    if (!B.raf) builderLoop();
+  }
+  function closeBuilder() {
+    if (!B.on) return;
+    B.on = false;
+    sendMsg("builder_leave", {});
+    document.getElementById("mp-builder").classList.remove("show");
+    if (B.raf) { cancelAnimationFrame(B.raf); B.raf = null; }
+    // back to title menu
+    const tm = document.getElementById("title-menu");
+    const ps = document.getElementById("press-start");
+    if (window.show) window.show("title-screen");
+    if (ps) ps.style.display = "none";
+    if (tm) tm.style.display = "flex";
+  }
+
+  /* ---------- input ---------- */
+  function builderKeyDown(e) {
+    if (!B.on) return;
+    const k = e.key.toLowerCase();
+    const map = { arrowup: "up", w: "up", arrowdown: "down", s: "down", arrowleft: "left", a: "left", arrowright: "right", d: "right" };
+    if (map[k]) { B.held = map[k]; e.preventDefault(); }
+    if (k === "x") { removeNearbyOwn(); e.preventDefault(); }
+    if (k === "e") { toggleRide(); e.preventDefault(); }
+    if (k === "escape") { closeBuilder(); }
+  }
+  function builderKeyUp(e) {
+    if (!B.on) return;
+    const k = e.key.toLowerCase();
+    const map = { arrowup: "up", w: "up", arrowdown: "down", s: "down", arrowleft: "left", a: "left", arrowright: "right", d: "right" };
+    if (map[k] === B.held) B.held = null;
+  }
+
+  function onBuilderClick(e) {
+    if (!B.on || !B.placeMode) return;
+    const rect = B.canvas.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) * (BVIEW_W / rect.width);
+    const cy = (e.clientY - rect.top) * (BVIEW_H / rect.height);
+    const wx = Math.floor((cx + B.cam.x) / BT);
+    const wy = Math.floor((cy + B.cam.y) / BT);
+    placeAt(wx, wy, B.placeMode);
+  }
+
+  function placeAt(x, y, key) {
+    const c = catInfo(key); if (!c) return;
+    if (bWallet() < c.price) { bToast("Not enough money! ($" + c.price + ")"); return; }
+    // local optimistic deduction happens on server-confirm to stay in sync; deduct now & refund on error
+    bWalletSet(bWallet() - c.price); refreshBWallet();
+    B._pendingCost = (B._pendingCost || 0) + c.price;
+    sendMsg("builder_place", { objType: key, x, y });
+  }
+
+  function removeNearbyOwn() {
+    // remove your own object on/adjacent to your tile
+    const px = Math.round(B.player.x), py = Math.round(B.player.y);
+    let found = null;
+    for (const o of B.objects.values()) {
+      if (o.owner !== B.me) continue;
+      if (Math.abs(o.x - px) <= 1 && Math.abs(o.y - py) <= 1) { found = o; break; }
+    }
+    if (found) sendMsg("builder_remove", { id: found.id });
+    else bToast("Stand next to your own build, then press X.");
+  }
+
+  function toggleRide() {
+    if (B.player.vehicle) { B.player.vehicle = null; bToast("Got off."); return; }
+    // find a vehicle you own on/near your tile
+    const px = Math.round(B.player.x), py = Math.round(B.player.y);
+    for (const o of B.objects.values()) {
+      if (VEHICLES[o.type] && Math.abs(o.x - px) <= 1 && Math.abs(o.y - py) <= 1) {
+        B.player.vehicle = o.type; bToast("Riding " + o.type + "! (E to get off)"); return;
+      }
+    }
+    bToast("Stand next to a vehicle you placed, then press RIDE.");
+  }
+
+  /* ---------- movement + loop ---------- */
+  function builderStep() {
+    const speed = B.player.vehicle ? (VEHICLES[B.player.vehicle] || 0.3) : 0.16;
+    if (B.player.moving) {
+      B.player.t += speed;
+      if (B.player.t >= 1) {
+        B.player.t = 1; B.player.x = B.player.tx; B.player.y = B.player.ty;
+        B.player.px = B.player.x * BT; B.player.py = B.player.y * BT; B.player.moving = false;
+      } else {
+        B.player.px = (B.player.fx + (B.player.tx - B.player.fx) * B.player.t) * BT;
+        B.player.py = (B.player.fy + (B.player.ty - B.player.fy) * B.player.t) * BT;
+      }
+    } else if (B.held) {
+      const d = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[B.held];
+      B.player.dir = B.held;
+      const nx = B.player.x + d[0], ny = B.player.y + d[1];
+      if (canWalk(nx, ny)) {
+        B.player.fx = B.player.x; B.player.fy = B.player.y;
+        B.player.tx = nx; B.player.ty = ny; B.player.t = 0; B.player.moving = true;
+      }
+    }
+  }
+  function canWalk(x, y) {
+    // blocked by wild trees and by solid placed objects (buildings & trees)
+    if (isWildTree(x, y)) return false;
+    for (const o of B.objects.values()) {
+      if (o.x === x && o.y === y && SOLID[o.type]) return false;
+    }
+    return true;
+  }
+  const SOLID = { tree: 1, house: 1, mansion: 1, shop: 1, pool: 1 }; // land/flowers/fence/vehicles walkable
+
+  function builderLoop() {
+    B.frame++;
+    builderStep();
+    // peer interpolation
+    for (const [id, p] of B.peers) {
+      if (p.t < 1) { p.t = Math.min(1, p.t + 0.2); p.px = (p.fx + (p.tx - p.fx) * p.t) * BT; p.py = (p.fy + (p.ty - p.fy) * p.t) * BT; }
+    }
+    // camera centers on player
+    B.cam.x = B.player.px - BVIEW_W / 2 + BT / 2;
+    B.cam.y = B.player.py - BVIEW_H / 2 + BT / 2;
+    drawBuilder();
+    sendBuilderPos();
+    B.raf = requestAnimationFrame(builderLoop);
+  }
+
+  function sendBuilderPos() {
+    if (!B.connectedOnce && MP.connected) B.connectedOnce = true;
+    const now = Date.now();
+    const sig = [Math.round(B.player.x), Math.round(B.player.y), B.player.dir, B.player.moving, B.player.vehicle].join(",");
+    if ((sig !== B.lastSig || now - B.lastSent > 1000) && now - B.lastSent > 80) {
+      B.lastSig = sig; B.lastSent = now;
+      sendMsg("builder_pos", { x: B.player.x, y: B.player.y, dir: B.player.dir, moving: B.player.moving, vehicle: B.player.vehicle });
+    }
+  }
+
+  /* ---------- rendering ---------- */
+  function drawBuilder() {
+    const ctx = B.ctx; if (!ctx) return;
+    ctx.fillStyle = "#3aa655"; ctx.fillRect(0, 0, BVIEW_W, BVIEW_H);
+    const startX = Math.floor(B.cam.x / BT), startY = Math.floor(B.cam.y / BT);
+    const cols = Math.ceil(BVIEW_W / BT) + 2, rows = Math.ceil(BVIEW_H / BT) + 2;
+
+    // ground + grass texture + wild scatter
+    for (let ry = 0; ry < rows; ry++) for (let rx = 0; rx < cols; rx++) {
+      const wx = startX + rx, wy = startY + ry;
+      const sx = wx * BT - B.cam.x, sy = wy * BT - B.cam.y;
+      // checker grass
+      ctx.fillStyle = ((wx + wy) & 1) ? "#3aa655" : "#34a04e";
+      ctx.fillRect(sx, sy, BT, BT);
+      if (isWildFlower(wx, wy)) { ctx.fillStyle = "#e573a0"; ctx.fillRect(sx + 9, sy + 9, 6, 6); }
+    }
+
+    // placed objects (sorted by y for depth)
+    const objs = [...B.objects.values()].sort((a, b) => a.y - b.y);
+    for (const o of objs) drawObject(ctx, o, o.x * BT - B.cam.x, o.y * BT - B.cam.y);
+
+    // wild trees on top of ground (after objects so they overlap nicely)
+    for (let ry = 0; ry < rows; ry++) for (let rx = 0; rx < cols; rx++) {
+      const wx = startX + rx, wy = startY + ry;
+      if (isWildTree(wx, wy)) drawTree(ctx, wx * BT - B.cam.x, wy * BT - B.cam.y, "#1f6b2a");
+    }
+
+    // peers
+    for (const p of B.peers.values()) drawAvatar(ctx, p.px - B.cam.x, p.py - B.cam.y, p.dir, p.vehicle, p.name, "#ffcf6b");
+    // me
+    drawAvatar(ctx, B.player.px - B.cam.x, B.player.py - B.cam.y, B.player.dir, B.player.vehicle, "YOU", "#6cf0a0");
+  }
+
+  function drawObject(ctx, o, sx, sy) {
+    const c = catInfo(o.type);
+    const col = c ? c.color : "#888";
+    if (o.type === "land") { ctx.fillStyle = "rgba(202,161,90,0.55)"; ctx.fillRect(sx, sy, BT, BT); ctx.strokeStyle = "#a07b34"; ctx.strokeRect(sx + 0.5, sy + 0.5, BT - 1, BT - 1); return; }
+    if (o.type === "flower") { ctx.fillStyle = "#2e8b3a"; ctx.fillRect(sx + 2, sy + 2, BT - 4, BT - 4); ctx.fillStyle = col; for (let i = 0; i < 4; i++) ctx.fillRect(sx + 4 + (i % 2) * 9, sy + 4 + Math.floor(i / 2) * 9, 5, 5); return; }
+    if (o.type === "fence") { ctx.fillStyle = col; ctx.fillRect(sx + 2, sy + 8, BT - 4, 4); ctx.fillRect(sx + 4, sy + 4, 3, 14); ctx.fillRect(sx + BT - 7, sy + 4, 3, 14); return; }
+    if (o.type === "tree") { drawTree(ctx, sx, sy, col); return; }
+    if (VEHICLES[o.type]) { drawVehicle(ctx, sx, sy, o.type, col); return; }
+    // buildings: house/mansion/shop/pool
+    drawBuilding(ctx, sx, sy, o.type, col);
+    if (o.ownerName) { ctx.font = "6px 'Press Start 2P',monospace"; ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.textAlign = "center"; ctx.fillText(o.ownerName.slice(0, 8), sx + BT / 2, sy - 2); ctx.textAlign = "start"; }
+  }
+  function drawTree(ctx, sx, sy, col) {
+    ctx.fillStyle = "#6b4a2a"; ctx.fillRect(sx + BT / 2 - 2, sy + BT - 8, 4, 8);
+    ctx.fillStyle = col || "#1f6b2a"; ctx.beginPath(); ctx.arc(sx + BT / 2, sy + BT / 2, BT / 2 - 2, 0, Math.PI * 2); ctx.fill();
+  }
+  function drawBuilding(ctx, sx, sy, type, col) {
+    const big = (type === "mansion");
+    const w = big ? BT * 2 : BT, h = big ? BT * 2 : BT;
+    ctx.fillStyle = col; ctx.fillRect(sx, sy + h * 0.35, w, h * 0.65);          // body
+    ctx.fillStyle = "#7a2d1c"; ctx.beginPath(); ctx.moveTo(sx - 2, sy + h * 0.4); ctx.lineTo(sx + w / 2, sy); ctx.lineTo(sx + w + 2, sy + h * 0.4); ctx.closePath(); ctx.fill(); // roof
+    ctx.fillStyle = "#3a2a18"; ctx.fillRect(sx + w / 2 - 4, sy + h - 9, 8, 9);   // door
+    ctx.fillStyle = "#bfe3ff"; ctx.fillRect(sx + 4, sy + h * 0.5, 5, 5);          // window
+    if (type === "pool") { ctx.fillStyle = "#39b6e0"; ctx.fillRect(sx + 3, sy + 3, BT - 6, BT - 6); ctx.strokeStyle = "#fff"; ctx.strokeRect(sx + 3.5, sy + 3.5, BT - 7, BT - 7); }
+  }
+  function drawVehicle(ctx, sx, sy, type, col) {
+    if (type === "bike") { ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx + 7, sy + BT - 6, 4, 0, 7); ctx.arc(sx + BT - 7, sy + BT - 6, 4, 0, 7); ctx.stroke(); ctx.beginPath(); ctx.moveTo(sx + 7, sy + BT - 6); ctx.lineTo(sx + BT / 2, sy + 8); ctx.lineTo(sx + BT - 7, sy + BT - 6); ctx.stroke(); return; }
+    ctx.fillStyle = col; ctx.fillRect(sx + 2, sy + 8, BT - 4, BT - 14);
+    ctx.fillStyle = "#bfe3ff"; ctx.fillRect(sx + 5, sy + 10, BT - 10, 4);
+    ctx.fillStyle = "#222"; ctx.fillRect(sx + 4, sy + BT - 6, 4, 4); ctx.fillRect(sx + BT - 8, sy + BT - 6, 4, 4);
+  }
+  function drawAvatar(ctx, sx, sy, dir, vehicle, name, col) {
+    if (vehicle) { drawVehicle(ctx, sx, sy, vehicle, catInfo(vehicle).color); }
+    // shadow
+    ctx.fillStyle = "rgba(0,0,0,.2)"; ctx.beginPath(); ctx.ellipse(sx + BT / 2, sy + BT - 3, 7, 3, 0, 0, 7); ctx.fill();
+    // body
+    ctx.fillStyle = col; ctx.fillRect(sx + BT / 2 - 5, sy + 4, 10, 12);
+    ctx.fillStyle = "#f4c896"; ctx.fillRect(sx + BT / 2 - 4, sy, 8, 6); // head
+    // facing eyes
+    ctx.fillStyle = "#222";
+    if (dir === "down") { ctx.fillRect(sx + BT / 2 - 3, sy + 2, 2, 2); ctx.fillRect(sx + BT / 2 + 1, sy + 2, 2, 2); }
+    else if (dir === "up") { /* back of head */ }
+    else if (dir === "left") { ctx.fillRect(sx + BT / 2 - 3, sy + 2, 2, 2); }
+    else { ctx.fillRect(sx + BT / 2 + 1, sy + 2, 2, 2); }
+    if (name) { ctx.font = "6px 'Press Start 2P',monospace"; ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.fillText(name.slice(0, 8), sx + BT / 2, sy - 3); ctx.textAlign = "start"; }
+  }
+
+  /* ---------- network handlers (called from handle()) ---------- */
+  function builderHandle(msg) {
+    switch (msg.type) {
+      case "builder_init":
+        B.me = msg.you;
+        B.objects.clear();
+        (msg.objects || []).forEach((o) => B.objects.set(o.id, o));
+        B.peers.clear();
+        (msg.peers || []).forEach((p) => B.peers.set(p.id, mkPeer(p)));
+        return true;
+      case "builder_peer_join":
+        if (msg.id !== B.me) B.peers.set(msg.id, mkPeer({ id: msg.id, name: msg.name, x: 0, y: 0, dir: "down" }));
+        return true;
+      case "builder_peer_left":
+        B.peers.delete(msg.id);
+        return true;
+      case "builder_peer_pos": {
+        if (msg.id === B.me) return true;
+        let p = B.peers.get(msg.id);
+        if (!p) { p = mkPeer(msg); B.peers.set(msg.id, p); }
+        p.name = msg.name || p.name; p.dir = msg.dir; p.moving = msg.moving; p.vehicle = msg.vehicle;
+        p.fx = p.px / BT; p.fy = p.py / BT; p.tx = msg.x; p.ty = msg.y; p.t = 0;
+        return true;
+      }
+      case "builder_placed":
+        B.objects.set(msg.obj.id, msg.obj);
+        if (msg.obj.owner === B.me) { B._pendingCost = 0; bToast(catInfo(msg.obj.type).name + " placed!"); }
+        return true;
+      case "builder_removed":
+        B.objects.delete(msg.id);
+        return true;
+      case "builder_error":
+        // refund optimistic deduction
+        if (B._pendingCost) { bWalletSet(bWallet() + B._pendingCost); B._pendingCost = 0; refreshBWallet(); }
+        bToast(msg.message || "Build error");
+        return true;
+      case "builder_chat":
+        bToast((msg.name || "?") + ": " + msg.text);
+        return true;
+    }
+    return false;
+  }
+  function mkPeer(p) {
+    return { name: p.name || "Builder", dir: p.dir || "down", moving: !!p.moving, vehicle: p.vehicle || null,
+      x: p.x || 0, y: p.y || 0, px: (p.x || 0) * BT, py: (p.y || 0) * BT, tx: p.x || 0, ty: p.y || 0, fx: p.x || 0, fy: p.y || 0, t: 1 };
+  }
+
+  // expose entry points on MP
+  MP.openBuilder = openBuilder;
+  MP.closeBuilder = closeBuilder;
+  MP._builderHandle = builderHandle;
 
   function init() {
     injectStyles();

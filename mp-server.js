@@ -8,9 +8,50 @@ import http from "http";
 import { WebSocketServer } from "ws";
 import { fileURLToPath } from "url";
 import path from "path";
+import fs from "fs";
 import { Battle, sanitizeMon } from "./battle-engine.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/* ============================================================
+   BUILDER MODE: one global, persisted, shared world.
+   - objects: array of { id, owner, type, x, y } (land/houses/vehicles/etc.)
+   - everyone spawns at the same point and sees each other live.
+   ============================================================ */
+const BUILDER_FILE = path.join(__dirname, "builder-world.json");
+const builder = {
+  clients: new Map(),       // playerId -> { ws, name, pos:{x,y,dir,moving,vehicle} }
+  objects: [],              // placed objects
+  nextObjId: 1,
+};
+function loadBuilder() {
+  try {
+    const raw = fs.readFileSync(BUILDER_FILE, "utf8");
+    const data = JSON.parse(raw);
+    builder.objects = Array.isArray(data.objects) ? data.objects : [];
+    builder.nextObjId = data.nextObjId || (builder.objects.reduce((m, o) => Math.max(m, o.id), 0) + 1);
+    console.log("Builder world loaded:", builder.objects.length, "objects");
+  } catch { /* no file yet */ }
+}
+let _saveTimer = null;
+function saveBuilderSoon() {
+  if (_saveTimer) return;
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    try {
+      fs.writeFileSync(BUILDER_FILE, JSON.stringify({ objects: builder.objects, nextObjId: builder.nextObjId }));
+    } catch (e) { console.warn("Builder save failed:", e.message); }
+  }, 1200);
+}
+loadBuilder();
+
+function builderBroadcast(type, payload = {}, exceptId = null) {
+  for (const [pid, c] of builder.clients) {
+    if (pid !== exceptId) {
+      try { if (c.ws.readyState === c.ws.OPEN) c.ws.send(JSON.stringify({ type, ...payload })); } catch {}
+    }
+  }
+}
 
 const app = express();
 app.use(express.static(path.join(__dirname, "public")));
@@ -172,6 +213,76 @@ wss.on("connection", (ws) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
     const type = msg.type;
+
+    // ---------- BUILDER MODE (global shared world) ----------
+    if (type === "builder_join") {
+      const name = clean(msg.name, 16) || "Builder";
+      builder.clients.set(ws.playerId, { ws, name, pos: { x: 0, y: 0, dir: "down", moving: false, vehicle: null } });
+      ws.inBuilder = true;
+      // send full world snapshot + current peers
+      const peers = [...builder.clients.entries()]
+        .filter(([pid]) => pid !== ws.playerId)
+        .map(([pid, c]) => ({ id: pid, name: c.name, ...c.pos }));
+      send(ws, "builder_init", { you: ws.playerId, objects: builder.objects, peers });
+      builderBroadcast("builder_peer_join", { id: ws.playerId, name }, ws.playerId);
+      return;
+    }
+    if (type === "builder_leave") {
+      if (builder.clients.has(ws.playerId)) {
+        builder.clients.delete(ws.playerId);
+        ws.inBuilder = false;
+        builderBroadcast("builder_peer_left", { id: ws.playerId });
+      }
+      return;
+    }
+    if (type === "builder_pos") {
+      const c = builder.clients.get(ws.playerId);
+      if (!c) return;
+      c.pos = {
+        x: Number(msg.x) || 0, y: Number(msg.y) || 0,
+        dir: ["up", "down", "left", "right"].includes(msg.dir) ? msg.dir : "down",
+        moving: !!msg.moving, vehicle: msg.vehicle ? clean(msg.vehicle, 16) : null,
+      };
+      builderBroadcast("builder_peer_pos", { id: ws.playerId, name: c.name, ...c.pos }, ws.playerId);
+      return;
+    }
+    if (type === "builder_place") {
+      if (!builder.clients.has(ws.playerId)) return;
+      const obj = {
+        id: builder.nextObjId++,
+        owner: ws.playerId,
+        ownerName: builder.clients.get(ws.playerId).name,
+        type: clean(msg.objType, 24),
+        x: Math.round(Number(msg.x) || 0),
+        y: Math.round(Number(msg.y) || 0),
+      };
+      if (!obj.type) return;
+      // prevent exact-overlap stacking on the same tile for land/buildings
+      const occupied = builder.objects.some((o) => o.x === obj.x && o.y === obj.y && o.type === obj.type);
+      if (occupied) { send(ws, "builder_error", { message: "That spot is already taken." }); return; }
+      builder.objects.push(obj);
+      saveBuilderSoon();
+      builderBroadcast("builder_placed", { obj });
+      return;
+    }
+    if (type === "builder_remove") {
+      const id = Number(msg.id);
+      const idx = builder.objects.findIndex((o) => o.id === id);
+      if (idx < 0) return;
+      // only the owner can remove their object
+      if (builder.objects[idx].owner !== ws.playerId) { send(ws, "builder_error", { message: "You can only remove your own builds." }); return; }
+      builder.objects.splice(idx, 1);
+      saveBuilderSoon();
+      builderBroadcast("builder_removed", { id });
+      return;
+    }
+    if (type === "builder_chat") {
+      const c = builder.clients.get(ws.playerId);
+      const text = clean(msg.text, 200).trim();
+      if (!c || !text) return;
+      builderBroadcast("builder_chat", { id: ws.playerId, name: c.name, text });
+      return;
+    }
 
     // ---------- LOBBY ----------
     if (type === "create") {
@@ -400,10 +511,18 @@ wss.on("connection", (ws) => {
   ws.on("close", () => {
     const room = rooms.get(ws.roomCode);
     if (room) removePlayer(room, ws.playerId);
+    if (builder.clients.has(ws.playerId)) {
+      builder.clients.delete(ws.playerId);
+      builderBroadcast("builder_peer_left", { id: ws.playerId });
+    }
   });
   ws.on("error", () => {
     const room = rooms.get(ws.roomCode);
     if (room) removePlayer(room, ws.playerId);
+    if (builder.clients.has(ws.playerId)) {
+      builder.clients.delete(ws.playerId);
+      builderBroadcast("builder_peer_left", { id: ws.playerId });
+    }
   });
 });
 
