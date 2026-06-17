@@ -6011,8 +6011,8 @@ try {
     h = (h ^ (h >> 13)) * 1274126177;
     return ((h ^ (h >> 16)) >>> 0) / 4294967295;
   }
-  function isWildTree(x, y) { return hash2(x, y) < 0.06; }
-  function isTallGrass(x, y) { return !isWildTree(x, y) && hash2(x + 5000, y + 5000) < 0.16; } // battle zones
+  function isWildTree(x, y) { return hash2(x, y) < 0.035; }                 // sparser trees -> easy to walk around
+  function isTallGrass(x, y) { return !isWildTree(x, y) && hash2(x + 5000, y + 5000) < 0.4; } // lots of grass = lots of encounters
 
   /* ---------- DOM ---------- */
   function buildBuilderDOM() {
@@ -6208,7 +6208,8 @@ try {
     // wild encounter chance in tall grass (no vehicle), like the journey
     B.stepsSinceBattle++;
     if (B.player.vehicle) return;
-    if (isTallGrass(Math.round(B.player.x), Math.round(B.player.y)) && B.stepsSinceBattle > 3 && Math.random() < 0.18) {
+    const gx = Math.round(B.player.x), gy = Math.round(B.player.y);
+    if (isTallGrass(gx, gy) && B.stepsSinceBattle >= 2 && Math.random() < 0.25) {
       B.stepsSinceBattle = 0;
       startBuilderWildBattle();
     }
@@ -6230,6 +6231,10 @@ try {
     G.partner.currentHp = G.partner.maxHp; // heal before each battle so it stays fun
     // mark so our endBattle hook returns us to the builder
     G._builderBattle = true;
+    // hide the builder overlay so the game's battle screen (inside the gameboy
+    // frame) is visible; pause the builder loop while battling.
+    const ov = document.getElementById("mp-builder");
+    if (ov) ov.classList.remove("show");
     window.launchBattle(window.battleCopy(G.partner), enemy, "adventure");
   }
 
