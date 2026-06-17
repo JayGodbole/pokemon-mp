@@ -6004,7 +6004,11 @@ try {
   ];
   const catInfo = (k) => BUILD_CATALOG.find((c) => c.key === k);
   const VEHICLES = { car: 0.30, bike: 0.24, boat: 0.28 };
-  const SOLID = { tree: 1, house: 1, mansion: 1, shop: 1, pool: 1 };
+  // Building footprints (w x h in tiles). Buildings are large & enterable.
+  const FOOTPRINT = { house: { w: 2, h: 2 }, shop: { w: 2, h: 2 }, pool: { w: 2, h: 2 }, mansion: { w: 3, h: 3 } };
+  const ENTERABLE = { house: 1, mansion: 1, shop: 1 };
+  // Solid (can't walk through): fences, trees, and building tiles (except their door).
+  const SOLID = { tree: 1, house: 1, mansion: 1, shop: 1, pool: 1, fence: 1 };
 
   function hash2(x, y) {
     let h = (x * 374761393 + y * 668265263) ^ 0x5bd1e995;
@@ -6036,6 +6040,25 @@ try {
       .bld-item.active{border-color:#7CFC9A;}
       #bld-hint{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);background:rgba(0,0,0,.6);color:#fff;font-size:7px;padding:6px 10px;border-radius:6px;pointer-events:none;z-index:10081;}
       #bld-toast{position:fixed;top:54px;left:50%;transform:translateX(-50%);background:#8B0000;color:#fff;padding:9px 14px;border-radius:8px;font-size:8px;z-index:10090;display:none;font-family:'Press Start 2P',monospace;}
+      /* on-screen controls */
+      #bld-touch{position:fixed;left:0;right:0;bottom:0;z-index:10085;display:none;justify-content:space-between;align-items:flex-end;padding:10px 14px 16px;pointer-events:none;}
+      #bld-touch.on{display:flex;}
+      #bld-dpad{position:relative;width:144px;height:144px;pointer-events:auto;}
+      .bld-d{position:absolute;width:46px;height:46px;background:#2b2f44;border:2px solid #FFD700;color:#FFD700;display:flex;align-items:center;justify-content:center;border-radius:10px;font-size:15px;user-select:none;touch-action:none;box-shadow:0 3px 0 #1a1d2e;}
+      .bld-d:active{background:#FFD700;color:#111;transform:translateY(2px);}
+      .bld-d[data-d="up"]{top:0;left:49px;} .bld-d[data-d="down"]{bottom:0;left:49px;}
+      .bld-d[data-d="left"]{left:0;top:49px;} .bld-d[data-d="right"]{right:0;top:49px;}
+      #bld-actions{display:flex;flex-direction:column;gap:8px;pointer-events:auto;}
+      .bld-a{background:#8B0000;color:#fff;border:2px solid #FFD700;border-radius:10px;padding:12px 14px;font-size:8px;text-align:center;user-select:none;touch-action:none;box-shadow:0 3px 0 #5a0000;}
+      .bld-a:active{transform:translateY(2px);}
+      /* building interior */
+      #bld-interior{position:fixed;inset:0;z-index:10095;background:rgba(0,0,0,.8);display:none;align-items:center;justify-content:center;padding:16px;}
+      #bld-interior.show{display:flex;}
+      #bld-int-box{background:#16213e;border:3px solid #FFD700;border-radius:12px;width:340px;max-width:94vw;padding:16px;color:#fff;display:flex;flex-direction:column;gap:8px;}
+      #bld-int-title{color:#FFD700;font-size:12px;text-align:center;margin-bottom:6px;}
+      .bld-int-row{font-size:8px;color:#cfe;line-height:1.6;text-align:center;margin-bottom:6px;}
+      .bld-tbtn{padding:11px;border:none;border-radius:8px;cursor:pointer;background:#4fc3f7;color:#062a3a;font-family:'Press Start 2P',monospace;font-size:8px;}
+      .bld-tbtn.green{background:#4CAF50;color:#fff;} .bld-tbtn.red{background:#8B0000;color:#fff;}
     `;
     document.head.appendChild(css);
     const div = document.createElement("div");
@@ -6051,9 +6074,33 @@ try {
         </div>
       </div>
       <div id="bld-palette"></div>
-      <div id="bld-hint">WASD/Arrows move · walk tall grass to find wild Pokemon · BUILD to place · X to remove your build</div>`;
+      <div id="bld-hint">WASD/Arrows move · walk tall grass to find wild Pokemon · BUILD to place · X remove · E ride · enter buildings via the door</div>
+      <!-- on-screen controls for phones -->
+      <div id="bld-touch">
+        <div id="bld-dpad">
+          <div class="bld-d" data-d="up">▲</div>
+          <div class="bld-d" data-d="left">◀</div>
+          <div class="bld-d" data-d="right">▶</div>
+          <div class="bld-d" data-d="down">▼</div>
+        </div>
+        <div id="bld-actions">
+          <div class="bld-a" data-a="x">REMOVE</div>
+          <div class="bld-a" data-a="e">RIDE</div>
+        </div>
+      </div>
+      <!-- building interior overlay -->
+      <div id="bld-interior">
+        <div id="bld-int-box">
+          <div id="bld-int-title">BUILDING</div>
+          <div id="bld-int-body"></div>
+          <button class="bld-tbtn red" id="bld-int-exit">✕ LEAVE</button>
+        </div>
+      </div>`;
     document.body.appendChild(div);
     const toast = document.createElement("div"); toast.id = "bld-toast"; document.body.appendChild(toast);
+    // wire interior exit + touch controls
+    document.getElementById("bld-int-exit").onclick = exitBuilding;
+    wireBuilderTouch();
 
     B.canvas = document.getElementById("bld-canvas");
     B.ctx = B.canvas.getContext("2d");
@@ -6109,7 +6156,10 @@ try {
   }
   function doOpenBuilder() {
     B.on = true; B.inBattle = false;
-    B.player = { x: 0, y: 0, px: 0, py: 0, dir: "down", moving: false, vehicle: null, tx: 0, ty: 0, t: 1, fx: 0, fy: 0 };
+    // restore last saved location so you spawn where you left off
+    let sx = 0, sy = 0;
+    try { const s = JSON.parse(localStorage.getItem("pokemon_dino_builder_pos") || "null"); if (s) { sx = s.x | 0; sy = s.y | 0; } } catch (e) {}
+    B.player = { x: sx, y: sy, px: sx * BT, py: sy * BT, dir: "down", moving: false, vehicle: null, tx: sx, ty: sy, t: 1, fx: sx, fy: sy };
     if (window.G) { window.G.mode = "adventure"; window.G.worldPaused = false; }
     ensureBuilderParty();
     document.getElementById("mp-builder").classList.add("show");
@@ -6132,8 +6182,20 @@ try {
 
   /* ---------- input ---------- */
   function builderKeyDown(e) {
-    if (!B.on || B.inBattle) return;
+    if (!B.on) return;
     const k = e.key.toLowerCase();
+    // M-cheat: press M four times within 1.2s -> +$99,999
+    if (k === "m") {
+      B._mCheat = (B._mCheat || 0) + 1;
+      clearTimeout(B._mTimer); B._mTimer = setTimeout(() => { B._mCheat = 0; }, 1200);
+      if (B._mCheat >= 4) { B._mCheat = 0; bWalletSet(bWallet() + 99999); refreshBWallet(); bToast("💰 CHEAT! +$99,999"); }
+    }
+    // interior overlay open? Enter/Space/Esc exits the building
+    if (document.getElementById("bld-interior").classList.contains("show")) {
+      if (k === "escape" || k === " " || k === "enter") { exitBuilding(); e.preventDefault(); }
+      return;
+    }
+    if (B.inBattle) return;
     const map = { arrowup: "up", w: "up", arrowdown: "down", s: "down", arrowleft: "left", a: "left", arrowright: "right", d: "right" };
     if (map[k]) { B.held = map[k]; e.preventDefault(); }
     if (k === "x") { removeNearbyOwn(); e.preventDefault(); }
@@ -6145,6 +6207,32 @@ try {
     const k = e.key.toLowerCase();
     const map = { arrowup: "up", w: "up", arrowdown: "down", s: "down", arrowleft: "left", a: "left", arrowright: "right", d: "right" };
     if (map[k] === B.held) B.held = null;
+  }
+
+  // On-screen controls (phones): hold D-pad to move, action buttons for remove/ride.
+  function wireBuilderTouch() {
+    const isTouch = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0) ||
+      (window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+    const pad = document.getElementById("bld-touch");
+    if (isTouch && pad) pad.classList.add("on");
+    document.querySelectorAll("#bld-dpad .bld-d").forEach((el) => {
+      const dir = el.dataset.d;
+      const press = (e) => { e.preventDefault(); if (!B.inBattle) B.held = dir; };
+      const release = (e) => { e.preventDefault(); if (B.held === dir) B.held = null; };
+      el.addEventListener("touchstart", press, { passive: false });
+      el.addEventListener("touchend", release, { passive: false });
+      el.addEventListener("touchcancel", release, { passive: false });
+      el.addEventListener("mousedown", press);
+      el.addEventListener("mouseup", release);
+      el.addEventListener("mouseleave", release);
+    });
+    document.querySelectorAll("#bld-actions .bld-a").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.preventDefault();
+        if (el.dataset.a === "x") removeNearbyOwn();
+        else if (el.dataset.a === "e") toggleRide();
+      });
+    });
   }
   function onBuilderClick(e) {
     if (!B.on || B.inBattle || !B.placeMode) return;
@@ -6158,6 +6246,16 @@ try {
   function placeAt(x, y, key) {
     const c = catInfo(key); if (!c) return;
     if (bWallet() < c.price) { bToast("Not enough money! Battle wild Pokemon to earn $."); return; }
+    // footprint overlap check for large buildings (client-side, before sending)
+    const fp = FOOTPRINT[key] || { w: 1, h: 1 };
+    for (let dy = 0; dy < fp.h; dy++) for (let dx = 0; dx < fp.w; dx++) {
+      const tx = x + dx, ty = y + dy;
+      if (isWildTree(tx, ty)) { bToast("Can't build on a tree."); return; }
+      for (const o of B.objects.values()) {
+        if (FOOTPRINT[o.type]) { if (inFootprint(o, tx, ty)) { bToast("That spot is occupied."); return; } }
+        else if (o.x === tx && o.y === ty && o.type !== "land" && o.type !== "flower") { bToast("That spot is occupied."); return; }
+      }
+    }
     bWalletSet(bWallet() - c.price); refreshBWallet();
     B._pendingCost = (B._pendingCost || 0) + c.price;
     sendMsg("builder_place", { objType: key, x, y });
@@ -6199,20 +6297,91 @@ try {
       if (canWalk(nx, ny)) { B.player.fx = B.player.x; B.player.fy = B.player.y; B.player.tx = nx; B.player.ty = ny; B.player.t = 0; B.player.moving = true; }
     }
   }
+  // Door tile of a building footprint = bottom-center tile (entrance).
+  function doorTile(o) {
+    const fp = FOOTPRINT[o.type] || { w: 1, h: 1 };
+    return { x: o.x + Math.floor(fp.w / 2), y: o.y + fp.h - 1 };
+  }
+  // Does world tile (x,y) fall inside object o's footprint?
+  function inFootprint(o, x, y) {
+    const fp = FOOTPRINT[o.type] || { w: 1, h: 1 };
+    return x >= o.x && x < o.x + fp.w && y >= o.y && y < o.y + fp.h;
+  }
   function canWalk(x, y) {
     if (isWildTree(x, y)) return false;
-    for (const o of B.objects.values()) { if (o.x === x && o.y === y && SOLID[o.type]) return false; }
+    for (const o of B.objects.values()) {
+      if (!SOLID[o.type]) continue;
+      if (FOOTPRINT[o.type]) {
+        if (inFootprint(o, x, y)) {
+          // the door tile is walkable (so you can enter); rest of footprint is solid
+          const d = doorTile(o);
+          if (ENTERABLE[o.type] && x === d.x && y === d.y) continue;
+          return false;
+        }
+      } else if (o.x === x && o.y === y) {
+        return false; // fence / tree single-tile block
+      }
+    }
     return true;
   }
   function onBuilderTileEnter() {
+    const gx = Math.round(B.player.x), gy = Math.round(B.player.y);
+    // Enter a building if standing on its door tile
+    for (const o of B.objects.values()) {
+      if (!ENTERABLE[o.type]) continue;
+      const d = doorTile(o);
+      if (gx === d.x && gy === d.y) { enterBuilding(o); return; }
+    }
     // wild encounter chance in tall grass (no vehicle), like the journey
     B.stepsSinceBattle++;
     if (B.player.vehicle) return;
-    const gx = Math.round(B.player.x), gy = Math.round(B.player.y);
     if (isTallGrass(gx, gy) && B.stepsSinceBattle >= 2 && Math.random() < 0.25) {
       B.stepsSinceBattle = 0;
       startBuilderWildBattle();
     }
+  }
+
+  /* ---------- building interiors ---------- */
+  function enterBuilding(o) {
+    B.held = null;
+    const names = { house: "HOUSE", mansion: "MANSION", shop: "SHOP" };
+    const ov = document.getElementById("bld-interior");
+    document.getElementById("bld-int-title").textContent =
+      (o.ownerName ? o.ownerName + "'s " : "") + (names[o.type] || "BUILDING");
+    let body = "";
+    if (o.type === "shop") {
+      body = `<div class="bld-int-row">Welcome to the shop! Buy items with your wallet.</div>
+        <button class="bld-tbtn" data-shop="potion" data-price="200">Potion — $200</button>
+        <button class="bld-tbtn" data-shop="superPotion" data-price="500">Super Potion — $500</button>
+        <button class="bld-tbtn" data-shop="pokeball" data-price="150">Poke Ball — $150</button>`;
+    } else if (o.type === "mansion") {
+      body = `<div class="bld-int-row">🏛️ A luxurious mansion. Rest here to heal your Pokemon!</div>
+        <button class="bld-tbtn green" data-int="heal">REST &amp; HEAL PARTY</button>`;
+    } else {
+      body = `<div class="bld-int-row">🏠 A cozy home. Rest here to heal your Pokemon!</div>
+        <button class="bld-tbtn green" data-int="heal">REST &amp; HEAL PARTY</button>`;
+    }
+    document.getElementById("bld-int-body").innerHTML = body;
+    ov.classList.add("show");
+    ov.querySelectorAll("[data-int]").forEach((b) => b.onclick = () => {
+      if (b.dataset.int === "heal") {
+        if (window.G && window.G.party) window.G.party.forEach((p) => { p.currentHp = p.maxHp; (p.moves || []).forEach((m) => m.currentPp = m.pp); });
+        bToast("Your Pokemon are fully healed!");
+      }
+    });
+    ov.querySelectorAll("[data-shop]").forEach((b) => b.onclick = () => {
+      const price = +b.dataset.price, key = b.dataset.shop;
+      if (bWallet() < price) { bToast("Not enough money!"); return; }
+      bWalletSet(bWallet() - price); refreshBWallet();
+      window.G.bag = window.G.bag || {}; window.G.bag[key] = (window.G.bag[key] || 0) + 1;
+      bToast("Bought " + key + "!");
+    });
+  }
+  function exitBuilding() {
+    document.getElementById("bld-interior").classList.remove("show");
+    // step the player one tile below the door so they don't re-enter immediately
+    const ny = B.player.y + 1;
+    if (canWalk(B.player.x, ny)) { B.player.y = ny; B.player.py = ny * BT; B.player.ty = ny; B.player.fy = ny; }
   }
   function startBuilderWildBattle() {
     const G = window.G;
@@ -6257,6 +6426,8 @@ try {
     if ((sig !== B.lastSig || now - B.lastSent > 1000) && now - B.lastSent > 80) {
       B.lastSig = sig; B.lastSent = now;
       sendMsg("builder_pos", { x: B.player.x, y: B.player.y, dir: B.player.dir, moving: B.player.moving, vehicle: B.player.vehicle });
+      // persist last location so we respawn here next time
+      try { localStorage.setItem("pokemon_dino_builder_pos", JSON.stringify({ x: Math.round(B.player.x), y: Math.round(B.player.y) })); } catch (e) {}
     }
   }
 
@@ -6316,12 +6487,29 @@ try {
     if (o.ownerName) { ctx.font = "5px 'Press Start 2P',monospace"; ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.textAlign = "center"; ctx.fillText(o.ownerName.slice(0, 8), sx + BT / 2, sy - 2); ctx.textAlign = "start"; }
   }
   function drawBuilding(ctx, sx, sy, type, col) {
-    const big = (type === "mansion"); const w = big ? BT * 2 : BT, h = big ? BT * 2 : BT;
-    ctx.fillStyle = col; ctx.fillRect(sx, sy + h * 0.35, w, h * 0.65);
-    ctx.fillStyle = "#7a2d1c"; ctx.beginPath(); ctx.moveTo(sx - 1, sy + h * 0.4); ctx.lineTo(sx + w / 2, sy); ctx.lineTo(sx + w + 1, sy + h * 0.4); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = "#3a2a18"; ctx.fillRect(sx + w / 2 - 2, sy + h - 6, 5, 6);
-    ctx.fillStyle = "#bfe3ff"; ctx.fillRect(sx + 3, sy + h * 0.5, 3, 3);
-    if (type === "pool") { ctx.fillStyle = "#39b6e0"; ctx.fillRect(sx + 2, sy + 2, BT - 4, BT - 4); ctx.strokeStyle = "#fff"; ctx.strokeRect(sx + 2.5, sy + 2.5, BT - 5, BT - 5); }
+    const fp = FOOTPRINT[type] || { w: 1, h: 1 };
+    const w = fp.w * BT, h = fp.h * BT;
+    if (type === "pool") {
+      ctx.fillStyle = "#cdb877"; ctx.fillRect(sx, sy, w, h);
+      ctx.fillStyle = "#39b6e0"; ctx.fillRect(sx + 3, sy + 3, w - 6, h - 6);
+      ctx.strokeStyle = "#fff"; ctx.strokeRect(sx + 3.5, sy + 3.5, w - 7, h - 7);
+      return;
+    }
+    // body
+    const roofH = Math.floor(h * 0.34);
+    ctx.fillStyle = col; ctx.fillRect(sx, sy + roofH, w, h - roofH);
+    // roof
+    ctx.fillStyle = "#7a2d1c"; ctx.beginPath();
+    ctx.moveTo(sx - 2, sy + roofH); ctx.lineTo(sx + w / 2, sy); ctx.lineTo(sx + w + 2, sy + roofH); ctx.closePath(); ctx.fill();
+    // windows
+    ctx.fillStyle = "#bfe3ff";
+    for (let i = 0; i < fp.w; i++) ctx.fillRect(sx + 4 + i * BT, sy + roofH + 4, 6, 6);
+    // DOOR at bottom-center tile (the entrance), with a glowing frame
+    const doorX = sx + Math.floor(fp.w / 2) * BT;
+    const doorY = sy + h - BT;
+    ctx.fillStyle = "#3a2a18"; ctx.fillRect(doorX + BT / 2 - 4, doorY + BT - 11, 8, 11);
+    ctx.fillStyle = "#FFD700"; ctx.fillRect(doorX + BT / 2 - 5, doorY + BT - 12, 1, 12); ctx.fillRect(doorX + BT / 2 + 4, doorY + BT - 12, 1, 12);
+    ctx.fillStyle = "#ffe066"; ctx.fillRect(doorX + BT / 2 + 1, doorY + BT - 6, 1, 2); // doorknob
   }
   function drawVehicle(ctx, sx, sy, type, col) {
     if (type === "bike") { ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(sx + 5, sy + BT - 4, 3, 0, 7); ctx.arc(sx + BT - 5, sy + BT - 4, 3, 0, 7); ctx.stroke(); return; }
