@@ -1063,6 +1063,7 @@
     window.addEventListener("keydown", (e) => {
       const tag = (document.activeElement && document.activeElement.tagName) || "";
       if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (B.on) return; // in Builder mode, T is the trade key (handled by builderKeyDown)
       if ((MP.started || MP.code) && e.key.toLowerCase() === "t") {
         const inp = document.getElementById("mp-chatbar-input");
         if (inp && inp.offsetParent !== null) { e.preventDefault(); inp.focus(); }
@@ -1497,7 +1498,7 @@
         </div>
       </div>
       <div id="bld-palette"></div>
-      <div id="bld-hint">WASD move · B = build menu · SPACE = cut grass\/trees \WASD move · BUILD to place parts · R rotate · X remove · E ride · build walls/floors/roofs ARK-style interact · R rotate · X remove · E ride</div>
+      <div id="bld-hint">WASD turn/move · B build menu · T trade with players · SPACE cut/enter · R rotate · X remove · E ride</div>
       <!-- on-screen controls for phones -->
       <div id="bld-touch">
         <div id="bld-dpad">
@@ -1508,6 +1509,7 @@
         </div>
         <div id="bld-actions">
           <div class="bld-a" data-a="act">ACT</div>
+          <div class="bld-a" data-a="trade">TRADE</div>
           <div class="bld-a" data-a="x">REMOVE</div>
           <div class="bld-a" data-a="e">RIDE</div>
         </div>
@@ -1686,7 +1688,8 @@
     const map = { arrowup: "up", w: "up", arrowdown: "down", s: "down", arrowleft: "left", a: "left", arrowright: "right", d: "right" };
     if (map[k]) { B.held = map[k]; e.preventDefault(); }
     if (k === "b") { toggleBuildMenu(); e.preventDefault(); }          // B = open/close BUILD menu
-    if (k === " " || k === "enter") { builderInteract(); e.preventDefault(); }  // SPACE = interact (cut / enter)
+    if (k === "t") { builderTalk(); e.preventDefault(); }              // T = trade with adjacent player
+    if (k === " " || k === "enter") { builderInteract(); e.preventDefault(); }  // SPACE = cut grass/trees / enter building
     if (k === "x") { removeNearbyOwn(); e.preventDefault(); }
     if (k === "e") { toggleRide(); e.preventDefault(); }
     if (k === "r") { B.rot = (B.rot + 1) % 4; bToast("Rotation: " + (B.rot * 90) + "°"); updateRotLabel(); e.preventDefault(); }
@@ -1701,18 +1704,23 @@
 
   // SPACE interact: cut the grass/tree you're facing (if you own a cutter),
   // or enter a building door you're standing on.
-  function builderInteract() {
-    const gx = Math.round(B.player.x), gy = Math.round(B.player.y);
-    // 1) talk to an adjacent player (trade money/items/pokemon)
+  // T = trade with an adjacent player (money / items).
+  function builderTalk() {
+    if (!B.on || B.inBattle) return;
     const peer = builderAdjacentPeer();
     if (peer) { openBuilderTalk(peer.id, peer.p); return; }
-    // 2) enter building if on its door
+    bToast("Stand next to another player, then press T to trade.");
+  }
+
+  function builderInteract() {
+    const gx = Math.round(B.player.x), gy = Math.round(B.player.y);
+    // 1) enter building if on its door
     for (const o of B.objects.values()) {
       if (!ENTERABLE[o.type]) continue;
       const d = doorTile(o);
       if (gx === d.x && gy === d.y) { enterBuilding(o); return; }
     }
-    // 3) otherwise try to cut the tile we're facing
+    // 2) otherwise try to cut the tile we're facing
     const dv = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[B.player.dir] || [0, 1];
     const fx = gx + dv[0], fy = gy + dv[1];
     const targets = [[fx, fy], [gx, gy]]; // facing tile first, then current tile
@@ -1824,6 +1832,7 @@
     }
   }
   function showBuilderTradeOffer(msg) {
+    if (!B.on || B.inBattle) { bToast((msg.fromName || "Someone") + " tried to trade — busy."); return; }
     B.incomingTrade = msg;
     const what = msg.kind === "money" ? ("$" + msg.payload.amount) : esc(msg.payload.name || msg.payload.key);
     openModal(esc(msg.fromName) + " wants to give you<br>" + what,
@@ -1863,6 +1872,7 @@
       el.addEventListener("click", (e) => {
         e.preventDefault();
         if (el.dataset.a === "act") builderInteract();
+        else if (el.dataset.a === "trade") builderTalk();
         else if (el.dataset.a === "x") removeNearbyOwn();
         else if (el.dataset.a === "e") toggleRide();
       });
@@ -2073,6 +2083,7 @@
     if (!G || !window.launchBattle || !window.battleCopy || !window.WILD_POKEMON) return;
     ensureBuilderParty();
     B.inBattle = true; B.held = null;
+    closeModal(); B.talkTo = null; B.incomingTrade = null;  // ensure no trade menu lingers into the battle
     // pick a wild pokemon (Route 1 pool), modest levels so it's winnable
     const pool = window.WILD_ROUTE1 || [16, 19, 10];
     const wid = pool[Math.floor(Math.random() * pool.length)];
