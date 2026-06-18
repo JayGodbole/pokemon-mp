@@ -10,6 +10,7 @@ import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
 import { Battle, sanitizeMon } from "./battle-engine.js";
+import { initStorage, loadDoc, saveDoc, storageBackend } from "./storage.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,8 +19,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
    - objects: array of { id, owner, type, x, y } (land/houses/vehicles/etc.)
    - everyone spawns at the same point and sees each other live.
    ============================================================ */
-const BUILDER_FILE = path.join(__dirname, "builder-world.json");
-const PROFILE_FILE = path.join(__dirname, "builder-profiles.json");
 const builder = {
   clients: new Map(),       // playerId -> { ws, name, pos:{x,y,dir,moving,vehicle}, profileKey }
   objects: [],              // placed objects
@@ -28,68 +27,59 @@ const builder = {
 };
 // Per-player profiles saved on the server: key = lowercase name -> { name, pin, wallet, pos, inventory }
 const profiles = new Map();
-function loadBuilder() {
-  try {
-    const raw = fs.readFileSync(BUILDER_FILE, "utf8");
-    const data = JSON.parse(raw);
-    builder.objects = Array.isArray(data.objects) ? data.objects : [];
-    builder.cleared = Array.isArray(data.cleared) ? data.cleared : [];
-    builder.nextObjId = data.nextObjId || (builder.objects.reduce((m, o) => Math.max(m, o.id), 0) + 1);
-    console.log("Builder world loaded:", builder.objects.length, "objects,", builder.cleared.length, "cleared tiles");
-  } catch { /* no file yet */ }
-  try {
-    const raw = fs.readFileSync(PROFILE_FILE, "utf8");
-    const data = JSON.parse(raw);
-    Object.entries(data).forEach(([k, v]) => profiles.set(k, v));
-    console.log("Builder profiles loaded:", profiles.size);
-  } catch { /* no file yet */ }
+
+// Load world + profiles from the active storage backend (DB or files).
+async function loadBuilder() {
+  const world = await loadDoc("world");
+  if (world) {
+    builder.objects = Array.isArray(world.objects) ? world.objects : [];
+    builder.cleared = Array.isArray(world.cleared) ? world.cleared : [];
+    builder.nextObjId = world.nextObjId || (builder.objects.reduce((m, o) => Math.max(m, o.id), 0) + 1);
+  }
+  console.log("Builder world loaded:", builder.objects.length, "objects,", builder.cleared.length, "cleared tiles");
+  const profs = await loadDoc("profiles");
+  if (profs) Object.entries(profs).forEach(([k, v]) => profiles.set(k, v));
+  console.log("Builder profiles loaded:", profiles.size);
 }
-// ---- immediate (synchronous) writers ----
-function writeBuilderNow() {
-  try {
-    fs.writeFileSync(BUILDER_FILE, JSON.stringify({ objects: builder.objects, cleared: builder.cleared, nextObjId: builder.nextObjId }));
-    return true;
-  } catch (e) { console.warn("Builder save failed:", e.message); return false; }
-}
-function writeProfilesNow() {
-  try {
-    const obj = {}; for (const [k, v] of profiles) obj[k] = v;
-    fs.writeFileSync(PROFILE_FILE, JSON.stringify(obj));
-    return true;
-  } catch (e) { console.warn("Profile save failed:", e.message); return false; }
-}
+
+const worldDoc = () => ({ objects: builder.objects, cleared: builder.cleared, nextObjId: builder.nextObjId });
+const profilesDoc = () => { const o = {}; for (const [k, v] of profiles) o[k] = v; return o; };
+
 // ---- debounced writers (used on each change) ----
 let _saveTimer = null;
 function saveBuilderSoon() {
   if (_saveTimer) return;
-  _saveTimer = setTimeout(() => { _saveTimer = null; writeBuilderNow(); }, 1200);
+  _saveTimer = setTimeout(() => { _saveTimer = null; saveDoc("world", worldDoc()); }, 1200);
 }
 let _profTimer = null;
 function saveProfilesSoon() {
   if (_profTimer) return;
-  _profTimer = setTimeout(() => { _profTimer = null; writeProfilesNow(); }, 1200);
+  _profTimer = setTimeout(() => { _profTimer = null; saveDoc("profiles", profilesDoc()); }, 1200);
 }
-function saveAllNow(reason) {
-  const a = writeBuilderNow(), b = writeProfilesNow();
-  if (reason) console.log("Saved world+profiles (" + reason + "):", builder.objects.length, "objects,", profiles.size, "profiles");
+// Force a full save of both docs (used on autosave / disconnect / shutdown).
+async function saveAllNow(reason) {
+  const a = await saveDoc("world", worldDoc());
+  const b = await saveDoc("profiles", profilesDoc());
+  if (reason) console.log("Saved world+profiles (" + reason + ") [" + storageBackend() + "]:", builder.objects.length, "objects,", profiles.size, "profiles");
   return a && b;
 }
-loadBuilder();
 
-// ---- AUTOSAVE: force a full save every 60 seconds so the shared world & all
-//      player progress are never lost (even on a sudden crash). ----
-setInterval(() => saveAllNow("autosave/60s"), 60000);
+// Initialize storage, then load existing data, then start autosave/shutdown hooks.
+await initStorage();
+await loadBuilder();
 
-// ---- save on shutdown (Ctrl-C / host stop / restart) ----
+// ---- AUTOSAVE: force a full save every 60 seconds. ----
+setInterval(() => { saveAllNow("autosave/60s"); }, 60000);
+
+// ---- save on shutdown (Ctrl-C / host stop / redeploy). ----
 let _shuttingDown = false;
-function gracefulExit(sig) {
+async function gracefulExit(sig) {
   if (_shuttingDown) return; _shuttingDown = true;
-  saveAllNow("shutdown:" + sig);
+  try { await saveAllNow("shutdown:" + sig); } catch {}
   process.exit(0);
 }
 process.on("SIGINT", () => gracefulExit("SIGINT"));
 process.on("SIGTERM", () => gracefulExit("SIGTERM"));
-process.on("beforeExit", () => saveAllNow("beforeExit"));
 
 function builderBroadcast(type, payload = {}, exceptId = null) {
   for (const [pid, c] of builder.clients) {

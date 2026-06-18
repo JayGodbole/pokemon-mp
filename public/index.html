@@ -1822,7 +1822,12 @@ function tryRun(){
   if(G.isBusy) return; G.isBusy=true;
   if(G._forceBattle){ say("No! There's no running from a trainer battle!", ()=>{ G.isBusy=false; showAction(); }); return; }
   if(G.mode==='adventure'){
-    if(Math.random()<0.6){ syncPartner(); say('Got away safely!', ()=>{ G.isBusy=false; forceClearText(); document.getElementById('battle-screen').style.display='none'; show('world-screen'); enterWorld(); }); }
+    if(Math.random()<0.6){ syncPartner(); say('Got away safely!', ()=>{
+      G.isBusy=false; forceClearText(); document.getElementById('battle-screen').style.display='none';
+      // If this was a Builder-mode wild battle, return to the builder world, not the journey overworld.
+      if(G._builderBattle){ G._builderBattle=false; if(window.MP&&window.MP._builderReturnFromBattle){ window.MP._builderReturnFromBattle(); return; } }
+      show('world-screen'); enterWorld();
+    }); }
     else { say("Couldn't escape!", ()=>{ G.isBusy=false; const am=aiChooseMove(); runAttack(G.p2,G.p1,am,'p2',()=>{ if(checkFaint())return; showAction(); }); }); }
   } else {
     if(Math.random()<0.4){ say('Got away safely!',()=>finishBattleEscape()); }
