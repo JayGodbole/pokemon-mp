@@ -341,6 +341,37 @@
       MP.ws.onmessage = (e) => handle(JSON.parse(e.data));
     });
   }
+
+  // Patient connect for free hosts that "sleep": waits through a cold start (~30-60s),
+  // retrying the WebSocket and showing a friendly waking-up message.
+  function connectWithWake(onStatus) {
+    return new Promise((resolve, reject) => {
+      if (location.protocol === "file:") { reject(new Error("file://")); return; }
+      const deadline = Date.now() + 75000; // wait up to 75s for the server to wake
+      let attempt = 0;
+      // nudge the host to wake via a normal HTTP request (Render wakes on any hit)
+      try { fetch("/", { cache: "no-store" }).catch(() => {}); } catch (e) {}
+      const tryOnce = () => {
+        attempt++;
+        if (onStatus) onStatus(attempt);
+        let ws;
+        try { ws = new WebSocket(wsUrl()); } catch (e) { return retry(); }
+        let settled = false;
+        const t = setTimeout(() => { if (!settled) { settled = true; try { ws.close(); } catch (e) {} retry(); } }, 6000);
+        ws.onopen = () => { if (settled) return; settled = true; clearTimeout(t); MP.ws = ws; MP.connected = true; wireSocket(ws); resolve(); };
+        ws.onerror = () => { if (settled) return; settled = true; clearTimeout(t); try { ws.close(); } catch (e) {} retry(); };
+      };
+      const retry = () => {
+        if (Date.now() > deadline) { reject(new Error("timeout")); return; }
+        setTimeout(tryOnce, 2500);
+      };
+      tryOnce();
+    });
+  }
+  function wireSocket(ws) {
+    ws.onclose = () => { MP.connected = false; if (MP.started || B.on) toast("Disconnected — reconnecting…"); };
+    ws.onmessage = (e) => handle(JSON.parse(e.data));
+  }
   function sendMsg(type, payload = {}) {
     if (MP.ws && MP.ws.readyState === WebSocket.OPEN) MP.ws.send(JSON.stringify({ type, ...payload }));
   }
@@ -1585,9 +1616,16 @@
         B._loginCreds = { name, pin };
         MP.name = name;
         try { localStorage.setItem("pokemon_dino_builder_name", name); localStorage.setItem("pokemon_dino_builder_pin", pin); } catch (e) {}
-        lg.classList.remove("show");
-        if (!MP.connected) connect().then(doOpenBuilder).catch(() => bToast("Can't reach server."));
-        else doOpenBuilder();
+        const errEl = document.getElementById("bld-login-err");
+        const goBtn = document.getElementById("bld-login-go");
+        if (MP.connected) { lg.classList.remove("show"); doOpenBuilder(); return; }
+        // Patiently wait through a free-host cold start ("Render is starting…").
+        goBtn.disabled = true;
+        errEl.style.color = "#9fd6ff";
+        errEl.textContent = "Connecting… the server may be waking up (up to ~60s on free hosting).";
+        connectWithWake((n) => { errEl.textContent = "Waking the server… attempt " + n + " (this can take ~30-60s the first time)"; })
+          .then(() => { goBtn.disabled = false; errEl.textContent = ""; errEl.style.color = "#ff7b7b"; lg.classList.remove("show"); doOpenBuilder(); })
+          .catch(() => { goBtn.disabled = false; errEl.style.color = "#ff7b7b"; errEl.textContent = "Couldn't reach the server. Please wait a moment and try again."; });
       };
     }
     // prefill last used
@@ -1705,11 +1743,15 @@
   /* ---------- Builder player-to-player interactions (trade money/items) ---------- */
   function builderAdjacentPeer() {
     const px = Math.round(B.player.x), py = Math.round(B.player.y);
-    const dv = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[B.player.dir] || [0, 1];
-    const cells = [[px + dv[0], py + dv[1]], [px, py - 1], [px, py + 1], [px - 1, py], [px + 1, py]];
+    // my tile + all 8 surrounding tiles (forgiving so trading is easy)
+    const cells = [];
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) cells.push([px + dx, py + dy]);
     for (const [cx, cy] of cells) {
       for (const [id, p] of B.peers) {
-        if (Math.round(p.x) === cx && Math.round(p.y) === cy) return { id, p };
+        // match either the peer's logical tile OR its current rendered tile (mid-walk)
+        const ptx = Math.round(p.x), pty = Math.round(p.y);
+        const prx = Math.round((p.px || 0) / BT), pry = Math.round((p.py || 0) / BT);
+        if ((ptx === cx && pty === cy) || (prx === cx && pry === cy)) return { id, p };
       }
     }
     return null;
@@ -2421,7 +2463,9 @@
         if (msg.id === B.me) return true;
         let p = B.peers.get(msg.id); if (!p) { p = mkPeer(msg); B.peers.set(msg.id, p); }
         p.name = msg.name || p.name; p.dir = msg.dir; p.moving = msg.moving; p.vehicle = msg.vehicle;
-        p.fx = p.px / BT; p.fy = p.py / BT; p.tx = msg.x; p.ty = msg.y; p.t = 0; return true;
+        p.fx = p.px / BT; p.fy = p.py / BT; p.tx = msg.x; p.ty = msg.y; p.t = 0;
+        p.x = msg.x; p.y = msg.y;   // keep logical tile up to date (used for adjacency/trade)
+        return true;
       }
       case "builder_placed": B.objects.set(msg.obj.id, msg.obj); if (msg.obj.owner === B.me) { B._pendingCost = 0; bToast(catInfo(msg.obj.type).name + " placed!"); } return true;
       case "builder_removed": B.objects.delete(msg.id); return true;
