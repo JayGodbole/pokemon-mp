@@ -369,6 +369,17 @@ wss.on("connection", (ws) => {
       builderBroadcast("builder_chat", { id: ws.playerId, name: c.name, text });
       return;
     }
+    // ---- builder player-to-player trade relay (money / items) ----
+    if (type === "builder_trade" || type === "builder_trade_confirm" || type === "builder_trade_cancel") {
+      const me = builder.clients.get(ws.playerId);
+      const target = builder.clients.get(Number(msg.target));
+      if (!me || !target) return;
+      const fwd = { from: ws.playerId, fromName: me.name, kind: clean(msg.kind, 16), payload: msg.payload || {} };
+      if (target.ws && target.ws.readyState === target.ws.OPEN) {
+        target.ws.send(JSON.stringify(Object.assign({ type }, fwd)));
+      }
+      return;
+    }
 
     // ---------- LOBBY ----------
     if (type === "create") {

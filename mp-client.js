@@ -760,6 +760,8 @@
     const modal = document.getElementById("mp-trade");
     modal.addEventListener("click", function(e){
       if (e.target === modal) { closeModal(); return; }
+      // builder-mode talk buttons use data-bact
+      if (e.target.closest("[data-bact]")) { builderTalkClickHandler(e); return; }
       const btn = e.target.closest("[data-act]");
       if (!btn) return;
       e.preventDefault(); e.stopPropagation();
@@ -1322,6 +1324,9 @@
     profileName: null,      // server profile (name+PIN)
     hasCutter: false,       // bought the grass/tree cutter
     cleared: new Set(),     // "x,y" tiles that have been cut/built-on (no grass, no encounters, no blockage)
+    deleteMode: false,      // delete-on-click toggle
+    talkTo: null,           // {id,p} player we're trading with
+    incomingTrade: null,    // a received builder trade offer awaiting accept/decline
   };
   const BT = 16;                 // SAME tile size as the overworld
   const BVIEW_W = 240, BVIEW_H = 160; // SAME internal view as the overworld (CSS upscales)
@@ -1404,6 +1409,7 @@
       .bld-btn.red{background:#8B0000;color:#fff;box-shadow:0 3px 0 #5a0000;}
       .bld-btn.blue{background:#4fc3f7;color:#062a3a;box-shadow:0 3px 0 #0277bd;}
       .bld-btn.green{background:#4CAF50;color:#fff;box-shadow:0 3px 0 #2e7d32;}
+      .bld-btn.active-del{background:#e0556a;color:#fff;box-shadow:0 3px 0 #8b0000;outline:2px solid #fff;}
       #bld-palette{position:fixed;left:10px;bottom:10px;right:10px;display:none;flex-wrap:wrap;gap:6px;background:rgba(15,24,48,.92);border:2px solid #FFD700;border-radius:10px;padding:8px;max-height:38vh;overflow:auto;z-index:10081;}
       .bld-cat-label{flex-basis:100%;color:#FFD700;font-size:7px;margin:4px 0 0;opacity:.85;}
       #bld-palette.show{display:flex;}
@@ -1451,6 +1457,7 @@
         </div>
         <div id="bld-top-right">
           <button class="bld-btn" id="bld-build">🏗️ BUILD</button>
+          <button class="bld-btn" id="bld-delete">🗑 DELETE</button>
           <button class="bld-btn" id="bld-rotbtn"><span id="bld-rot">↻ 0°</span></button>
           <button class="bld-btn" id="bld-cutter">🪓 BUY CUTTER</button>
           <button class="bld-btn blue" id="bld-ride">🚗 RIDE</button>
@@ -1502,7 +1509,7 @@
         const el = document.createElement("div");
         el.className = "bld-item"; el.dataset.key = c.key;
         el.innerHTML = `${c.name}<span class="p">$${c.price}</span>`;
-        el.onclick = () => { B.placeMode = c.key; updatePaletteActive(); bToast((c.rotatable ? "R to rotate · " : "") + "Tap a tile to place " + c.name); };
+        el.onclick = () => { B.placeMode = c.key; if (B.deleteMode) toggleDeleteMode(); updatePaletteActive(); bToast((c.rotatable ? "R to rotate · " : "") + "Tap a tile to place " + c.name); };
         pal.appendChild(el);
       });
     });
@@ -1511,6 +1518,7 @@
       if (!pal.classList.contains("show")) { B.placeMode = null; updatePaletteActive(); }
     };
     document.getElementById("bld-rotbtn").onclick = () => { B.rot = (B.rot + 1) % 4; updateRotLabel(); bToast("Rotation: " + (B.rot * 90) + "°"); };
+    document.getElementById("bld-delete").onclick = toggleDeleteMode;
     document.getElementById("bld-cutter").onclick = buyCutter;
     document.getElementById("bld-ride").onclick = toggleRide;
     document.getElementById("bld-save").onclick = saveBuilderProgress;
@@ -1657,13 +1665,16 @@
   // or enter a building door you're standing on.
   function builderInteract() {
     const gx = Math.round(B.player.x), gy = Math.round(B.player.y);
-    // enter building if on its door
+    // 1) talk to an adjacent player (trade money/items/pokemon)
+    const peer = builderAdjacentPeer();
+    if (peer) { openBuilderTalk(peer.id, peer.p); return; }
+    // 2) enter building if on its door
     for (const o of B.objects.values()) {
       if (!ENTERABLE[o.type]) continue;
       const d = doorTile(o);
       if (gx === d.x && gy === d.y) { enterBuilding(o); return; }
     }
-    // otherwise try to cut the tile we're facing
+    // 3) otherwise try to cut the tile we're facing
     const dv = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[B.player.dir] || [0, 1];
     const fx = gx + dv[0], fy = gy + dv[1];
     const targets = [[fx, fy], [gx, gy]]; // facing tile first, then current tile
@@ -1690,6 +1701,98 @@
     bToast("Cutter bought! Face grass/trees and press SPACE to cut.");
   }
   function updateRotLabel() { const el = document.getElementById("bld-rot"); if (el) el.textContent = "↻ " + (B.rot * 90) + "°"; }
+
+  /* ---------- Builder player-to-player interactions (trade money/items) ---------- */
+  function builderAdjacentPeer() {
+    const px = Math.round(B.player.x), py = Math.round(B.player.y);
+    const dv = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[B.player.dir] || [0, 1];
+    const cells = [[px + dv[0], py + dv[1]], [px, py - 1], [px, py + 1], [px - 1, py], [px + 1, py]];
+    for (const [cx, cy] of cells) {
+      for (const [id, p] of B.peers) {
+        if (Math.round(p.x) === cx && Math.round(p.y) === cy) return { id, p };
+      }
+    }
+    return null;
+  }
+  function openBuilderTalk(id, peer) {
+    B.talkTo = { id, p: peer };
+    openModal("Talk to " + esc(peer.name || "Builder"),
+      '<button class="mp-tbtn" data-bact="money">💰 GIVE MONEY</button>' +
+      '<button class="mp-tbtn" data-bact="item">🎒 GIVE AN ITEM</button>' +
+      '<button class="mp-tbtn gray" data-bact="close">CANCEL</button>');
+  }
+  // reuse the trade modal element + helpers (openModal/closeModal) from the journey system
+  function builderTalkClickHandler(e) {
+    if (!B.on) return;
+    const btn = e.target.closest("[data-bact]");
+    if (!btn) return;
+    e.preventDefault(); e.stopPropagation();
+    const act = btn.dataset.bact;
+    const t = B.talkTo; if (!t && act !== "close") return;
+    if (act === "close") { closeModal(); return; }
+    if (act === "money") {
+      openModal("Give money to " + esc(t.p.name || "Builder"),
+        '<div class="mp-tinfo">You have $' + bWallet() + '</div>' +
+        '<input id="bld-money-amt" class="mp-tinput" type="number" min="1" inputmode="numeric" placeholder="0">' +
+        '<button class="mp-tbtn green" data-bact="money-send">SEND OFFER</button>' +
+        '<button class="mp-tbtn gray" data-bact="back">BACK</button>');
+      setTimeout(() => { const i = document.getElementById("bld-money-amt"); if (i) i.focus(); }, 30);
+      return;
+    }
+    if (act === "item") {
+      const bag = (window.G && window.G.bag) || {};
+      const defs = (window.ITEM_DEFS || []);
+      const owned = defs.filter((d) => (bag[d.key] || 0) > 0);
+      const rows = owned.length
+        ? owned.map((d) => '<button class="mp-titem" data-bact="item-pick" data-key="' + d.key + '"><span>' + esc(d.name) + '</span><span class="q">x' + bag[d.key] + '</span></button>').join("")
+        : '<div class="mp-tinfo">No items to give.</div>';
+      openModal("Give an item to " + esc(t.p.name || "Builder"), '<div class="mp-tlist">' + rows + '</div><button class="mp-tbtn gray" data-bact="back">BACK</button>');
+      return;
+    }
+    if (act === "back") { openBuilderTalk(t.id, t.p); return; }
+    if (act === "money-send") {
+      const el = document.getElementById("bld-money-amt");
+      const amt = Math.floor(Number(el ? el.value : 0) || 0);
+      if (amt <= 0) return bToast("Enter a valid amount.");
+      if (amt > bWallet()) return bToast("You don't have that much.");
+      sendMsg("builder_trade", { target: t.id, kind: "money", payload: { amount: amt } });
+      closeModal(); bToast("Offered $" + amt + " to " + (t.p.name || "player") + "…");
+      return;
+    }
+    if (act === "item-pick") {
+      const key = btn.dataset.key; const def = (window.ITEM_DEFS || []).find((d) => d.key === key);
+      sendMsg("builder_trade", { target: t.id, kind: "item", payload: { key: key, name: def ? def.name : key } });
+      closeModal(); bToast("Offered " + (def ? def.name : key) + "…");
+      return;
+    }
+    if (act === "offer-accept") {
+      const m = B.incomingTrade; B.incomingTrade = null;
+      if (!m) { closeModal(); return; }
+      if (m.kind === "money") { bWalletSet(bWallet() + Math.floor(m.payload.amount || 0)); refreshBWallet(); }
+      else if (m.kind === "item") { window.G.bag = window.G.bag || {}; window.G.bag[m.payload.key] = (window.G.bag[m.payload.key] || 0) + 1; }
+      sendMsg("builder_trade_confirm", { target: m.from, kind: m.kind, payload: m.payload });
+      const what = m.kind === "money" ? ("$" + m.payload.amount) : (m.payload.name || m.payload.key);
+      bToast("Received " + what + " from " + m.fromName + "!"); closeModal();
+      return;
+    }
+    if (act === "offer-decline") {
+      const m = B.incomingTrade; B.incomingTrade = null;
+      if (m) sendMsg("builder_trade_cancel", { target: m.from });
+      closeModal(); return;
+    }
+  }
+  function showBuilderTradeOffer(msg) {
+    B.incomingTrade = msg;
+    const what = msg.kind === "money" ? ("$" + msg.payload.amount) : esc(msg.payload.name || msg.payload.key);
+    openModal(esc(msg.fromName) + " wants to give you<br>" + what,
+      '<button class="mp-tbtn green" data-bact="offer-accept">ACCEPT</button>' +
+      '<button class="mp-tbtn red" data-bact="offer-decline">DECLINE</button>');
+  }
+  function finalizeBuilderGive(msg) {
+    // giver deducts after recipient accepted
+    if (msg.kind === "money") { bWalletSet(Math.max(0, bWallet() - Math.floor(msg.payload.amount || 0))); refreshBWallet(); bToast("Gave $" + msg.payload.amount + " to " + msg.fromName); }
+    else if (msg.kind === "item") { if (window.G && window.G.bag && window.G.bag[msg.payload.key]) window.G.bag[msg.payload.key] = Math.max(0, window.G.bag[msg.payload.key] - 1); bToast("Gave " + (msg.payload.name || msg.payload.key) + " to " + msg.fromName); }
+  }
   function builderKeyUp(e) {
     if (!B.on) return;
     const k = e.key.toLowerCase();
@@ -1724,13 +1827,39 @@
     });
   }
   function onBuilderClick(e) {
-    if (!B.on || B.inBattle || !B.placeMode) return;
+    if (!B.on || B.inBattle) return;
     const rect = B.canvas.getBoundingClientRect();
     const cx = (e.clientX - rect.left) * (BVIEW_W / rect.width);
     const cy = (e.clientY - rect.top) * (BVIEW_H / rect.height);
     const wx = Math.floor((cx + B.cam.x) / BT);
     const wy = Math.floor((cy + B.cam.y) / BT);
-    placeAt(wx, wy, B.placeMode);
+    if (B.deleteMode) { deleteTopAt(wx, wy); return; }
+    if (B.placeMode) placeAt(wx, wy, B.placeMode);
+  }
+
+  // Delete the TOP-MOST (most-recently-placed = highest id) object on/over a tile.
+  function deleteTopAt(x, y) {
+    let top = null;
+    for (const o of B.objects.values()) {
+      const hit = FOOTPRINT[o.type] ? inFootprint(o, x, y) : (o.x === x && o.y === y);
+      if (!hit) continue;
+      if (o.owner !== B.me) continue;                 // only your own builds
+      if (!top || o.id > top.id) top = o;             // highest id = placed last = on top
+    }
+    if (!top) { bToast("Nothing of yours to delete here."); return; }
+    sendMsg("builder_remove", { id: top.id });
+    // refund part of the cost
+    const c = catInfo(top.type);
+    if (c) { bWalletSet(bWallet() + Math.floor(c.price * 0.5)); refreshBWallet(); }
+    bToast("Deleted " + (c ? c.name : top.type) + " (50% refund)");
+  }
+
+  function toggleDeleteMode() {
+    B.deleteMode = !B.deleteMode;
+    if (B.deleteMode) { B.placeMode = null; updatePaletteActive(); const pal = document.getElementById("bld-palette"); if (pal) pal.classList.remove("show"); }
+    const btn = document.getElementById("bld-delete");
+    if (btn) { btn.classList.toggle("active-del", B.deleteMode); btn.textContent = B.deleteMode ? "🗑 DELETE: ON" : "🗑 DELETE"; }
+    bToast(B.deleteMode ? "Delete mode ON — click a block to remove it." : "Delete mode off.");
   }
   function placeAt(x, y, key) {
     const c = catInfo(key); if (!c) return;
@@ -1747,12 +1876,17 @@
         }
       }
     } else {
-      // ARK-style modular part: only block the SAME part with SAME rotation on this tile
+      // ARK-style modular part: max 2 layers per tile; no exact duplicate part.
       if (isWildTree(x, y) && key !== "tree") { bToast("Can't build on a tree."); return; }
+      let stackCount = 0;
       for (const o of B.objects.values()) {
         if (FOOTPRINT[o.type] && inFootprint(o, x, y)) { bToast("That spot is occupied by a building."); return; }
-        if (o.x === x && o.y === y && o.type === key && (o.rot || 0) === B.rot) { bToast("That part is already here."); return; }
+        if (o.x === x && o.y === y) {
+          stackCount++;
+          if (o.type === key && (o.rot || 0) === B.rot) { bToast("That part is already here."); return; }
+        }
       }
+      if (stackCount >= 2) { bToast("Only 2 items can be stacked on a tile."); return; }
     }
     bWalletSet(bWallet() - c.price); refreshBWallet();
     B._pendingCost = (B._pendingCost || 0) + c.price;
@@ -1793,7 +1927,15 @@
       }
     } else if (B.held) {
       const d = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[B.held];
-      B.player.dir = B.held;
+      // Turn in place first: if we're not already facing this way, just rotate
+      // (lets you change facing while standing on the same block). A short grace
+      // delay means a quick tap only turns; holding then walks.
+      if (B.player.dir !== B.held) {
+        B.player.dir = B.held;
+        B._turnGrace = B.frame;
+        return;
+      }
+      if (B._turnGrace != null && (B.frame - B._turnGrace) < 8) return; // ~8 frames to register a "turn-only" tap
       const nx = B.player.x + d[0], ny = B.player.y + d[1];
       if (canWalk(nx, ny)) { B.player.fx = B.player.x; B.player.fy = B.player.y; B.player.tx = nx; B.player.ty = ny; B.player.t = 0; B.player.moving = true; }
     }
@@ -2284,6 +2426,9 @@
       case "builder_placed": B.objects.set(msg.obj.id, msg.obj); if (msg.obj.owner === B.me) { B._pendingCost = 0; bToast(catInfo(msg.obj.type).name + " placed!"); } return true;
       case "builder_removed": B.objects.delete(msg.id); return true;
       case "builder_cleared": if (msg.key) B.cleared.add(msg.key); return true;
+      case "builder_trade": showBuilderTradeOffer(msg); return true;          // someone offers me money/item
+      case "builder_trade_confirm": finalizeBuilderGive(msg); return true;    // my offer was accepted -> deduct
+      case "builder_trade_cancel": bToast((msg.fromName || "Player") + " declined."); return true;
       case "builder_error": if (B._pendingCost) { bWalletSet(bWallet() + B._pendingCost); B._pendingCost = 0; refreshBWallet(); } bToast(msg.message || "Build error"); return true;
       case "builder_chat": bToast((msg.name || "?") + ": " + msg.text); return true;
     }
