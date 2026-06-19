@@ -6376,12 +6376,29 @@ try {
 
   // SPACE interact: cut the grass/tree you're facing (if you own a cutter),
   // or enter a building door you're standing on.
-  // T = trade with an adjacent player (money / items).
+  // T = trade. Opens a picker listing EVERY online builder so you can give
+  // them money / items / a Pokemon without having to stand next to them.
   function builderTalk() {
     if (!B.on || B.inBattle) return;
-    const peer = builderAdjacentPeer();
-    if (peer) { openBuilderTalk(peer.id, peer.p); return; }
-    bToast("Stand next to another player, then press T to trade.");
+    openBuilderPlayerPicker();
+  }
+
+  // List all online builders (other than me) and let the player pick one to trade with.
+  function openBuilderPlayerPicker() {
+    const list = [...B.peers.entries()].filter(([id]) => id !== B.me);
+    if (!list.length) {
+      openModal("Trade",
+        '<div class="mp-tinfo">No other players are online in Builder Mode right now.<br><br>Ask a friend to open Builder Mode, then press T again.</div>' +
+        '<button class="mp-tbtn gray" data-bact="close">CLOSE</button>');
+      return;
+    }
+    const rows = list.map(([id, p]) =>
+      '<button class="mp-titem" data-bact="pick-player" data-pid="' + id + '">' +
+      '<span>' + esc(p.name || "Builder") + '</span><span class="q">trade \u25B6</span></button>'
+    ).join("");
+    openModal("Who do you want to trade with?",
+      '<div class="mp-tlist">' + rows + '</div>' +
+      '<button class="mp-tbtn gray" data-bact="close">CLOSE</button>');
   }
 
   function builderInteract() {
@@ -6438,9 +6455,11 @@ try {
   }
   function openBuilderTalk(id, peer) {
     B.talkTo = { id, p: peer };
-    openModal("Talk to " + esc(peer.name || "Builder"),
-      '<button class="mp-tbtn" data-bact="money">💰 GIVE MONEY</button>' +
-      '<button class="mp-tbtn" data-bact="item">🎒 GIVE AN ITEM</button>' +
+    openModal("Give to " + esc(peer.name || "Builder"),
+      '<button class="mp-tbtn" data-bact="money">\uD83D\uDCB0 GIVE MONEY</button>' +
+      '<button class="mp-tbtn" data-bact="item">\uD83C\uDF92 GIVE AN ITEM</button>' +
+      '<button class="mp-tbtn" data-bact="pokemon">\uD83D\uDC3E GIVE A POKEMON</button>' +
+      '<button class="mp-tbtn gray" data-bact="back-players">\u25C0 OTHER PLAYER</button>' +
       '<button class="mp-tbtn gray" data-bact="close">CANCEL</button>');
   }
   // reuse the trade modal element + helpers (openModal/closeModal) from the journey system
@@ -6450,8 +6469,19 @@ try {
     if (!btn) return;
     e.preventDefault(); e.stopPropagation();
     const act = btn.dataset.bact;
-    const t = B.talkTo; if (!t && act !== "close") return;
+    // These actions don't need an existing talkTo target.
     if (act === "close") { closeModal(); return; }
+    if (act === "back-players") { openBuilderPlayerPicker(); return; }
+    if (act === "pick-player") {
+      const pid = Number(btn.dataset.pid);
+      const p = B.peers.get(pid);
+      if (!p) { bToast("That player went offline."); openBuilderPlayerPicker(); return; }
+      openBuilderTalk(pid, p);
+      return;
+    }
+    const t = B.talkTo;
+    // offer-accept/offer-decline use B.incomingTrade, not B.talkTo
+    if (!t && act !== "offer-accept" && act !== "offer-decline") return;
     if (act === "money") {
       openModal("Give money to " + esc(t.p.name || "Builder"),
         '<div class="mp-tinfo">You have $' + bWallet() + '</div>' +
@@ -6471,6 +6501,14 @@ try {
       openModal("Give an item to " + esc(t.p.name || "Builder"), '<div class="mp-tlist">' + rows + '</div><button class="mp-tbtn gray" data-bact="back">BACK</button>');
       return;
     }
+    if (act === "pokemon") {
+      const party = (window.G && window.G.party) || [];
+      const rows = party.length > 1
+        ? party.map((m, idx) => '<button class="mp-titem" data-bact="poke-pick" data-idx="' + idx + '"><span>' + esc(m.name) + '</span><span class="q">Lv' + (m.level || 50) + '</span></button>').join("")
+        : '<div class="mp-tinfo">You cannot give your only Pokemon.</div>';
+      openModal("Give a Pokemon to " + esc(t.p.name || "Builder"), '<div class="mp-tlist">' + rows + '</div><button class="mp-tbtn gray" data-bact="back">BACK</button>');
+      return;
+    }
     if (act === "back") { openBuilderTalk(t.id, t.p); return; }
     if (act === "money-send") {
       const el = document.getElementById("bld-money-amt");
@@ -6487,13 +6525,45 @@ try {
       closeModal(); bToast("Offered " + (def ? def.name : key) + "…");
       return;
     }
+    if (act === "poke-pick") {
+      const idx = Number(btn.dataset.idx);
+      const party = (window.G && window.G.party) || [];
+      const mon = party[idx];
+      if (!mon) return;
+      if (party.length <= 1) { bToast("You cannot give your only Pokemon."); return; }
+      const monData = JSON.parse(JSON.stringify(mon));
+      // remember which slot we offered so we can remove it once the gift is accepted
+      B.pendingGive = { kind: "pokemon", idx: idx };
+      sendMsg("builder_trade", { target: t.id, kind: "pokemon", payload: { mon: monData } });
+      closeModal(); bToast("Offered " + mon.name + " to " + (t.p.name || "player") + "…");
+      return;
+    }
     if (act === "offer-accept") {
       const m = B.incomingTrade; B.incomingTrade = null;
       if (!m) { closeModal(); return; }
-      if (m.kind === "money") { bWalletSet(bWallet() + Math.floor(m.payload.amount || 0)); refreshBWallet(); }
-      else if (m.kind === "item") { window.G.bag = window.G.bag || {}; window.G.bag[m.payload.key] = (window.G.bag[m.payload.key] || 0) + 1; }
+      let what = "";
+      if (m.kind === "money") {
+        bWalletSet(bWallet() + Math.floor(m.payload.amount || 0)); refreshBWallet();
+        what = "$" + m.payload.amount;
+      } else if (m.kind === "item") {
+        window.G.bag = window.G.bag || {};
+        window.G.bag[m.payload.key] = (window.G.bag[m.payload.key] || 0) + 1;
+        what = m.payload.name || m.payload.key;
+      } else if (m.kind === "pokemon") {
+        const G = window.G || {}; G.party = G.party || [];
+        if (G.party.length >= 6) {
+          bToast("Your party is full (6) — can't accept the Pokemon.");
+          sendMsg("builder_trade_cancel", { target: m.from }); closeModal(); return;
+        }
+        const mon = m.payload.mon || {};
+        mon.currentHp = mon.currentHp != null ? mon.currentHp : (mon.maxHp || mon.hp);
+        mon.statMods = mon.statMods || { attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0 };
+        G.party.push(mon);
+        if (!G.partner) { G.partner = mon; G.partnerIdx = G.party.length - 1; }
+        what = mon.name + " (Lv" + (mon.level || 50) + ")";
+        syncBuilderInventory();
+      }
       sendMsg("builder_trade_confirm", { target: m.from, kind: m.kind, payload: m.payload });
-      const what = m.kind === "money" ? ("$" + m.payload.amount) : (m.payload.name || m.payload.key);
       bToast("Received " + what + " from " + m.fromName + "!"); closeModal();
       return;
     }
@@ -6506,15 +6576,34 @@ try {
   function showBuilderTradeOffer(msg) {
     if (!B.on || B.inBattle) { bToast((msg.fromName || "Someone") + " tried to trade — busy."); return; }
     B.incomingTrade = msg;
-    const what = msg.kind === "money" ? ("$" + msg.payload.amount) : esc(msg.payload.name || msg.payload.key);
+    let what;
+    if (msg.kind === "money") what = "$" + msg.payload.amount;
+    else if (msg.kind === "pokemon") what = esc((msg.payload.mon && msg.payload.mon.name) || "a Pokemon") + " (Lv" + ((msg.payload.mon && msg.payload.mon.level) || 50) + ")";
+    else what = esc(msg.payload.name || msg.payload.key);
     openModal(esc(msg.fromName) + " wants to give you<br>" + what,
       '<button class="mp-tbtn green" data-bact="offer-accept">ACCEPT</button>' +
       '<button class="mp-tbtn red" data-bact="offer-decline">DECLINE</button>');
   }
   function finalizeBuilderGive(msg) {
     // giver deducts after recipient accepted
-    if (msg.kind === "money") { bWalletSet(Math.max(0, bWallet() - Math.floor(msg.payload.amount || 0))); refreshBWallet(); bToast("Gave $" + msg.payload.amount + " to " + msg.fromName); }
-    else if (msg.kind === "item") { if (window.G && window.G.bag && window.G.bag[msg.payload.key]) window.G.bag[msg.payload.key] = Math.max(0, window.G.bag[msg.payload.key] - 1); bToast("Gave " + (msg.payload.name || msg.payload.key) + " to " + msg.fromName); }
+    if (msg.kind === "money") {
+      bWalletSet(Math.max(0, bWallet() - Math.floor(msg.payload.amount || 0))); refreshBWallet();
+      bToast("Gave $" + msg.payload.amount + " to " + msg.fromName);
+    } else if (msg.kind === "item") {
+      if (window.G && window.G.bag && window.G.bag[msg.payload.key]) window.G.bag[msg.payload.key] = Math.max(0, window.G.bag[msg.payload.key] - 1);
+      bToast("Gave " + (msg.payload.name || msg.payload.key) + " to " + msg.fromName);
+    } else if (msg.kind === "pokemon") {
+      const G = window.G || {};
+      const give = B.pendingGive;
+      if (give && give.kind === "pokemon" && G.party && G.party.length > 1 && typeof give.idx === "number") {
+        G.party.splice(give.idx, 1);
+        if (G.partnerIdx >= G.party.length) G.partnerIdx = 0;
+        G.partner = G.party[G.partnerIdx];
+      }
+      bToast("Gave " + ((msg.payload.mon && msg.payload.mon.name) || "Pokemon") + " to " + msg.fromName);
+    }
+    B.pendingGive = null;
+    syncBuilderInventory();
   }
   function builderKeyUp(e) {
     if (!B.on) return;
@@ -6796,6 +6885,10 @@ try {
   function saveBuilderProgress(silent) {
     sendMsg("builder_save_profile", { wallet: bWallet(), inventory: (window.G && window.G.bag) || {} });
     if (!silent) bToast("Progress saved to server!");
+  }
+  // Push wallet + bag to the server after a trade so values persist immediately.
+  function syncBuilderInventory() {
+    try { sendMsg("builder_save_profile", { wallet: bWallet(), inventory: (window.G && window.G.bag) || {} }); } catch (e) {}
   }
   function sendBuilderPos() {
     const now = Date.now();
